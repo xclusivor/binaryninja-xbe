@@ -458,7 +458,7 @@ class XBELoader(BinaryView):
                 )
             )
             address += 0x4
-        self.log("Done setting up kernel expors!")
+        self.log("Done setting up kernel exports!")
 
     def define_xbe_symbols(self):
         # Download latest XbSymbolDatabase release
