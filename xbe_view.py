@@ -7,7 +7,17 @@ from binaryninja import (
     Type,
     SegmentFlag,
     SectionSemantics,
+    Symbol,
+    SymbolType,
 )
+
+from zipfile import ZipFile
+import os
+import requests
+import subprocess
+import platform
+import pathlib
+import stat
 
 
 class XBELoader(BinaryView):
@@ -32,9 +42,459 @@ class XBELoader(BinaryView):
     def perform_is_executable(self):
         return True
 
+    def on_complete(self):
+        print("XBE analysis complete. Running XbeXbSymbolDatabase analyzer.")
+
+        self.define_xbe_symbols()
+        self.process_imports()
+
+    def process_imports(self):
+        kernel_exports = [
+            "",
+            "AvGetSavedDataAddress",
+            "AvSendTVEncoderOption",
+            "AvSetDisplayMode",
+            "AvSetSavedDataAddress",
+            "DbgBreakPoint",
+            "DbgBreakPointWithStatus",
+            "DbgLoadImageSymbols",
+            "DbgPrint",
+            "HalReadSMCTrayState",
+            "DbgPrompt",
+            "DbgUnLoadImageSymbols",
+            "ExAcquireReadWriteLockExclusive",
+            "ExAcquireReadWriteLockShared",
+            "ExAllocatePool",
+            "ExAllocatePoolWithTag",
+            "ExEventObjectType",
+            "ExFreePool",
+            "ExInitializeReadWriteLock",
+            "ExInterlockedAddLargeInteger",
+            "ExInterlockedAddLargeStatistic",
+            "ExInterlockedCompareExchange64",
+            "ExMutantObjectType",
+            "ExQueryPoolBlockSize",
+            "ExQueryNonVolatileSetting",
+            "ExReadWriteRefurbInfo",
+            "ExRaiseException",
+            "ExRaiseStatus",
+            "ExReleaseReadWriteLock",
+            "ExSaveNonVolatileSetting",
+            "ExSemaphoreObjectType",
+            "ExTimerObjectType",
+            "ExfInterlockedInsertHeadList",
+            "ExfInterlockedInsertTailList",
+            "ExfInterlockedRemoveHeadList",
+            "FscGetCacheSize",
+            "FscInvalidateIdleBlocks",
+            "FscSetCacheSize",
+            "HalClearSoftwareInterrupt",
+            "HalDisableSystemInterrupt",
+            "HalDiskCachePartitionCount",
+            "HalDiskModelNumber",
+            "HalDiskSerialNumber",
+            "HalEnableSystemInterrupt",
+            "HalGetInterruptVector",
+            "HalReadSMBusValue",
+            "HalReadWritePCISpace",
+            "HalRegisterShutdownNotification",
+            "HalRequestSoftwareInterrupt",
+            "HalReturnToFirmware",
+            "HalWriteSMBusValue",
+            "InterlockedCompareExchange",
+            "InterlockedDecrement",
+            "InterlockedIncrement",
+            "InterlockedExchange",
+            "InterlockedExchangeAdd",
+            "InterlockedFlushSList",
+            "InterlockedPopEntrySList",
+            "InterlockedPushEntrySList",
+            "IoAllocateIrp",
+            "IoBuildAsynchronousFsdRequest",
+            "IoBuildDeviceIoControlRequest",
+            "IoBuildSynchronousFsdRequest",
+            "IoCheckShareAccess",
+            "IoCompletionObjectType",
+            "IoCreateDevice",
+            "IoCreateFile",
+            "IoCreateSymbolicLink",
+            "IoDeleteDevice",
+            "IoDeleteSymbolicLink",
+            "IoDeviceObjectType",
+            "IoFileObjectType",
+            "IoFreeIrp",
+            "IoInitializeIrp",
+            "IoInvalidDeviceRequest",
+            "IoQueryFileInformation",
+            "IoQueryVolumeInformation",
+            "IoQueueThreadIrp",
+            "IoRemoveShareAccess",
+            "IoSetIoCompletion",
+            "IoSetShareAccess",
+            "IoStartNextPacket",
+            "IoStartNextPacketByKey",
+            "IoStartPacket",
+            "IoSynchronousDeviceIoControlRequest",
+            "IoSynchronousFsdRequest",
+            "IofCallDriver",
+            "IofCompleteRequest",
+            "KdDebuggerEnabled",
+            "KdDebuggerNotPresent",
+            "IoDismountVolume",
+            "IoDismountVolumeByName",
+            "KeAlertResumeThread",
+            "KeAlertThread",
+            "KeBoostPriorityThread",
+            "KeBugCheck",
+            "KeBugCheckEx",
+            "KeCancelTimer",
+            "KeConnectInterrupt",
+            "KeDelayExecutionThread",
+            "KeDisconnectInterrupt",
+            "KeEnterCriticalRegion",
+            "MmGlobalData",
+            "KeGetCurrentIrql",
+            "KeGetCurrentThread",
+            "KeInitializeApc",
+            "KeInitializeDeviceQueue",
+            "KeInitializeDpc",
+            "KeInitializeEvent",
+            "KeInitializeInterrupt",
+            "KeInitializeMutant",
+            "KeInitializeQueue",
+            "KeInitializeSemaphore",
+            "KeInitializeTimerEx",
+            "KeInsertByKeyDeviceQueue",
+            "KeInsertDeviceQueue",
+            "KeInsertHeadQueue",
+            "KeInsertQueue",
+            "KeInsertQueueApc",
+            "KeInsertQueueDpc",
+            "KeInterruptTime",
+            "KeIsExecutingDpc",
+            "KeLeaveCriticalRegion",
+            "KePulseEvent",
+            "KeQueryBasePriorityThread",
+            "KeQueryInterruptTime",
+            "KeQueryPerformanceCounter",
+            "KeQueryPerformanceFrequency",
+            "KeQuerySystemTime",
+            "KeRaiseIrqlToDpcLevel",
+            "KeRaiseIrqlToSynchLevel",
+            "KeReleaseMutant",
+            "KeReleaseSemaphore",
+            "KeRemoveByKeyDeviceQueue",
+            "KeRemoveDeviceQueue",
+            "KeRemoveEntryDeviceQueue",
+            "KeRemoveQueue",
+            "KeRemoveQueueDpc",
+            "KeResetEvent",
+            "KeRestoreFloatingPointState",
+            "KeResumeThread",
+            "KeRundownQueue",
+            "KeSaveFloatingPointState",
+            "KeSetBasePriorityThread",
+            "KeSetDisableBoostThread",
+            "KeSetEvent",
+            "KeSetEventBoostPriority",
+            "KeSetPriorityProcess",
+            "KeSetPriorityThread",
+            "KeSetTimer",
+            "KeSetTimerEx",
+            "KeStallExecutionProcessor",
+            "KeSuspendThread",
+            "KeSynchronizeExecution",
+            "KeSystemTime",
+            "KeTestAlertThread",
+            "KeTickCount",
+            "KeTimeIncrement",
+            "KeWaitForMultipleObjects",
+            "KeWaitForSingleObject",
+            "KfRaiseIrql",
+            "KfLowerIrql",
+            "KiBugCheckData",
+            "KiUnlockDispatcherDatabase",
+            "LaunchDataPage",
+            "MmAllocateContiguousMemory",
+            "MmAllocateContiguousMemoryEx",
+            "MmAllocateSystemMemory",
+            "MmClaimGpuInstanceMemory",
+            "MmCreateKernelStack",
+            "MmDeleteKernelStack",
+            "MmFreeContiguousMemory",
+            "MmFreeSystemMemory",
+            "MmGetPhysicalAddress",
+            "MmIsAddressValid",
+            "MmLockUnlockBufferPages",
+            "MmLockUnlockPhysicalPage",
+            "MmMapIoSpace",
+            "MmPersistContiguousMemory",
+            "MmQueryAddressProtect",
+            "MmQueryAllocationSize",
+            "MmQueryStatistics",
+            "MmSetAddressProtect",
+            "MmUnmapIoSpace",
+            "NtAllocateVirtualMemory",
+            "NtCancelTimer",
+            "NtClearEvent",
+            "NtClose",
+            "NtCreateDirectoryObject",
+            "NtCreateEvent",
+            "NtCreateFile",
+            "NtCreateIoCompletion",
+            "NtCreateMutant",
+            "NtCreateSemaphore",
+            "NtCreateTimer",
+            "NtDeleteFile",
+            "NtDeviceIoControlFile",
+            "NtDuplicateObject",
+            "NtFlushBuffersFile",
+            "NtFreeVirtualMemory",
+            "NtFsControlFile",
+            "NtOpenDirectoryObject",
+            "NtOpenFile",
+            "NtOpenSymbolicLinkObject",
+            "NtProtectVirtualMemory",
+            "NtPulseEvent",
+            "NtQueueApcThread",
+            "NtQueryDirectoryFile",
+            "NtQueryDirectoryObject",
+            "NtQueryEvent",
+            "NtQueryFullAttributesFile",
+            "NtQueryInformationFile",
+            "NtQueryIoCompletion",
+            "NtQueryMutant",
+            "NtQuerySemaphore",
+            "NtQuerySymbolicLinkObject",
+            "NtQueryTimer",
+            "NtQueryVirtualMemory",
+            "NtQueryVolumeInformationFile",
+            "NtReadFile",
+            "NtReadFileScatter",
+            "NtReleaseMutant",
+            "NtReleaseSemaphore",
+            "NtRemoveIoCompletion",
+            "NtResumeThread",
+            "NtSetEvent",
+            "NtSetInformationFile",
+            "NtSetIoCompletion",
+            "NtSetSystemTime",
+            "NtSetTimerEx",
+            "NtSignalAndWaitForSingleObjectEx",
+            "NtSuspendThread",
+            "NtUserIoApcDispatcher",
+            "NtWaitForSingleObject",
+            "NtWaitForSingleObjectEx",
+            "NtWaitForMultipleObjectsEx",
+            "NtWriteFile",
+            "NtWriteFileGather",
+            "NtYieldExecution",
+            "ObCreateObject",
+            "ObDirectoryObjectType",
+            "ObInsertObject",
+            "ObMakeTemporaryObject",
+            "ObOpenObjectByName",
+            "ObOpenObjectByPointer",
+            "ObpObjectHandleTable",
+            "ObReferenceObjectByHandle",
+            "ObReferenceObjectByName",
+            "ObReferenceObjectByPointer",
+            "ObSymbolicLinkObjectType",
+            "ObfDereferenceObject",
+            "ObfReferenceObject",
+            "PhyGetLinkState",
+            "PhyInitialize",
+            "PsCreateSystemThread",
+            "PsCreateSystemThreadEx",
+            "PsQueryStatistics",
+            "PsSetCreateThreadNotifyRoutine",
+            "PsTerminateSystemThread",
+            "PsThreadObjectType",
+            "RtlAnsiStringToUnicodeString",
+            "RtlAppendStringToString",
+            "RtlAppendUnicodeStringToString",
+            "RtlAppendUnicodeToString",
+            "RtlAssert",
+            "RtlCaptureContext",
+            "RtlCaptureStackBackTrace",
+            "RtlCharToInteger",
+            "RtlCompareMemory",
+            "RtlCompareMemoryUlong",
+            "RtlCompareString",
+            "RtlCompareUnicodeString",
+            "RtlCopyString",
+            "RtlCopyUnicodeString",
+            "RtlCreateUnicodeString",
+            "RtlDowncaseUnicodeChar",
+            "RtlDowncaseUnicodeString",
+            "RtlEnterCriticalSection",
+            "RtlEnterCriticalSectionAndRegion",
+            "RtlEqualString",
+            "RtlEqualUnicodeString",
+            "RtlExtendedIntegerMultiply",
+            "RtlExtendedLargeIntegerDivide",
+            "RtlExtendedMagicDivide",
+            "RtlFillMemory",
+            "RtlFillMemoryUlong",
+            "RtlFreeAnsiString",
+            "RtlFreeUnicodeString",
+            "RtlGetCallersAddress",
+            "RtlInitAnsiString",
+            "RtlInitUnicodeString",
+            "RtlInitializeCriticalSection",
+            "RtlIntegerToChar",
+            "RtlIntegerToUnicodeString",
+            "RtlLeaveCriticalSection",
+            "RtlLeaveCriticalSectionAndRegion",
+            "RtlLowerChar",
+            "RtlMapGenericMask",
+            "RtlMoveMemory",
+            "RtlMultiByteToUnicodeN",
+            "RtlMultiByteToUnicodeSize",
+            "RtlNtStatusToDosError",
+            "RtlRaiseException",
+            "RtlRaiseStatus",
+            "RtlTimeFieldsToTime",
+            "RtlTimeToTimeFields",
+            "RtlTryEnterCriticalSection",
+            "RtlUlongByteSwap",
+            "RtlUnicodeStringToAnsiString",
+            "RtlUnicodeStringToInteger",
+            "RtlUnicodeToMultiByteN",
+            "RtlUnicodeToMultiByteSize",
+            "RtlUnwind",
+            "RtlUpcaseUnicodeChar",
+            "RtlUpcaseUnicodeString",
+            "RtlUpcaseUnicodeToMultiByteN",
+            "RtlUpperChar",
+            "RtlUpperString",
+            "RtlUshortByteSwap",
+            "RtlWalkFrameChain",
+            "RtlZeroMemory",
+            "XboxEEPROMKey",
+            "XboxHardwareInfo",
+            "XboxHDKey",
+            "XboxKrnlVersion",
+            "XboxSignatureKey",
+            "XeImageFileName",
+            "XeLoadSection",
+            "XeUnloadSection",
+            "READ_PORT_BUFFER_UCHAR",
+            "READ_PORT_BUFFER_USHORT",
+            "READ_PORT_BUFFER_ULONG",
+            "WRITE_PORT_BUFFER_UCHAR",
+            "WRITE_PORT_BUFFER_USHORT",
+            "WRITE_PORT_BUFFER_ULONG",
+            "XcSHAInit",
+            "XcSHAUpdate",
+            "XcSHAFinal",
+            "XcRC4Key",
+            "XcRC4Crypt",
+            "XcHMAC",
+            "XcPKEncPublic",
+            "XcPKDecPrivate",
+            "XcPKGetKeyLen",
+            "XcVerifyPKCS1Signature",
+            "XcModExp",
+            "XcDESKeyParity",
+            "XcKeyTable",
+            "XcBlockCrypt",
+            "XcBlockCryptCBC",
+            "XcCryptService",
+            "XcUpdateCrypto",
+            "RtlRip",
+            "XboxLANKey",
+            "XboxAlternateSignatureKeys",
+            "XePublicKeyData",
+            "HalBootSMCVideoMode",
+            "IdexChannelObject",
+            "HalIsResetOrShutdownPending",
+            "IoMarkIrpMustComplete",
+            "HalInitiateShutdown",
+            "RtlSnprintf",
+            "RtlSprintf",
+            "RtlVsnprintf",
+            "RtlVsprintf",
+            "HalEnableSecureTrayEject",
+            "HalWriteSMCScratchRegister",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "MmDbgAllocateMemory",
+            "MmDbgFreeMemory",
+            "MmDbgQueryAvailablePages",
+            "MmDbgReleaseAddress",
+            "MmDbgWriteCheck",
+        ]
+
+    def define_xbe_symbols(self):
+        # Download latest XbSymbolDatabase release
+        database_zip_filename = "XbSymbolDatabase.zip"
+        current_file_filepath = str(pathlib.Path(__file__).parent.resolve())
+        download_filepath = current_file_filepath + "/" + database_zip_filename
+        extract_path = (
+            current_file_filepath + "/" + pathlib.Path(download_filepath).stem
+        )
+        if not os.path.exists(extract_path):
+            print(f"Downloading XbSymbolDatabase analyzer")
+            release_url = (
+                "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/"
+                + database_zip_filename
+            )
+            request_obj = requests.get(release_url, allow_redirects=True)
+            with open(download_filepath, "wb") as file_obj:
+                file_obj.write(request_obj.content)
+
+            with ZipFile(download_filepath, "r") as zip_obj:
+                zip_obj.extractall(extract_path)
+
+        os_plat = platform.system()
+        analyzer_tool_name = "XbSymbolDatabaseCLI"
+        analyzer_tool_filepath = ""
+        if os_plat == "Windows":
+            analyzer_tool_filepath = (
+                extract_path + "/win_x64/bin/" + analyzer_tool_name + ".exe"
+            )
+        elif os_plat == "Linux":
+            analyzer_tool_filepath = (
+                extract_path + "/linux_x64/bin/" + analyzer_tool_name
+            )
+        elif os_plat == "Darkwin":
+            analyzer_tool_filepath = (
+                extract_path + "/macos_x64/bin/" + analyzer_tool_name
+            )
+
+        xbe_filepath = self.file.original_filename
+        st = os.stat(analyzer_tool_filepath)
+        os.chmod(analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
+        output = subprocess.run(
+            [analyzer_tool_filepath, xbe_filepath], capture_output=True
+        )
+
+        output_stdout = output.stdout
+        output_split = output_stdout.splitlines()
+        for line in output_split:
+            symbol_and_address = line.split(b"=")
+            symbol = symbol_and_address[0].strip().decode()
+            address = hex(int(symbol_and_address[1].decode(), 16))
+
+            print(f'Found "{symbol}" at {address}. Creating label...')
+
+            # Not everything from analyzer output points to a functions, but MAY be a data ref. Need to differentiate.
+            # Maybe check addr and see if in read-only data?
+            self.define_auto_symbol(Symbol(SymbolType.FunctionSymbol, address, symbol))
+
+        print("Done adding symbols from XbSymbolDatabase")
+
     def init(self):
         self.arch = Architecture["x86"]
         self.platform = self.arch.standalone_platform
+
+        self.add_analysis_completion_event(self.on_complete)
 
         with StructureBuilder.builder(self.raw, "XBE_IMAGE_HEADER") as xbe_image_header:
             xbe_image_header.packed = True
@@ -137,16 +597,20 @@ class XBELoader(BinaryView):
             self.raw, "XBE_CERTIFICATE_HEADER"
         ) as xbe_certificate_header:
             xbe_certificate_header.packed = True
-            xbe_certificate_header.append(Type.int(4, False), "SizeOfHeader")
-            xbe_certificate_header.append(Type.int(4, False), "TimeDateStamp")
-            xbe_certificate_header.append(Type.int(4, False), "TitleID")
-            xbe_certificate_header.append(Type.array(Type.wide_char(0x2), 0x28), "TitleName")
-            xbe_certificate_header.append(Type.array(Type.char(), 0x40), "AlternativeTitleIDs")
-            xbe_certificate_header.append(Type.int(4, False), "AllowedMedia")
-            xbe_certificate_header.append(Type.int(4, False), "GameRegion")
-            xbe_certificate_header.append(Type.int(4, False), "GameRatings")
-            xbe_certificate_header.append(Type.int(4, False), "DiskNumber")
-            xbe_certificate_header.append(Type.int(4, False), "Version")
+            xbe_certificate_header.append(Type.int(0x4, False), "SizeOfHeader")
+            xbe_certificate_header.append(Type.int(0x4, False), "TimeDateStamp")
+            xbe_certificate_header.append(Type.int(0x4, False), "TitleID")
+            xbe_certificate_header.append(
+                Type.array(Type.wide_char(0x2), 0x28), "TitleName"
+            )
+            xbe_certificate_header.append(
+                Type.array(Type.char(), 0x40), "AlternativeTitleIDs"
+            )
+            xbe_certificate_header.append(Type.int(0x4, False), "AllowedMedia")
+            xbe_certificate_header.append(Type.int(0x4, False), "GameRegion")
+            xbe_certificate_header.append(Type.int(0x4, False), "GameRatings")
+            xbe_certificate_header.append(Type.int(0x4, False), "DiskNumber")
+            xbe_certificate_header.append(Type.int(0x4, False), "Version")
             xbe_certificate_header.append(Type.array(Type.char(), 0x10), "LANKey")
             xbe_certificate_header.append(Type.array(Type.char(), 0x10), "SignatureKey")
             xbe_certificate_header.append(
@@ -162,13 +626,17 @@ class XBELoader(BinaryView):
         certificate_struct_raw = self.raw.get_data_var_at(certificate_address)
         SizeOfHeader = certificate_struct_raw["SizeOfHeader"]
         if SizeOfHeader.value >= 0x184:
-            xbe_certificate_header.append(Type.int(0x4, False), "OriginalCertificateSize")
+            xbe_certificate_header.append(
+                Type.int(0x4, False), "OriginalCertificateSize"
+            )
         if SizeOfHeader.value >= 0x1D8:
             xbe_certificate_header.append(Type.int(0x4, False), "OnlineServiceID")
         if SizeOfHeader.value >= 0x1DC:
             xbe_certificate_header.append(Type.int(0x4, False), "SecurityFlags")
         if SizeOfHeader.value >= 0x1EC:
-            xbe_certificate_header.append(Type.array(Type.char(), 0x10), "CodeEncryptionKey")
+            xbe_certificate_header.append(
+                Type.array(Type.char(), 0x10), "CodeEncryptionKey"
+            )
         self.define_data_var(
             certificate_address,
             xbe_certificate_header,
@@ -179,19 +647,19 @@ class XBELoader(BinaryView):
             self.raw, "XBE_SECTION_HEADER"
         ) as xbe_section_header:
             xbe_section_header.packed = True
-            xbe_section_header.append(Type.int(4, False), "Flags")
+            xbe_section_header.append(Type.int(0x4, False), "Flags")
             xbe_section_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)), "VirtualAddress"
             )
-            xbe_section_header.append(Type.int(4, False), "VirtualSize")
+            xbe_section_header.append(Type.int(0x4, False), "VirtualSize")
             xbe_section_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)), "RawAddress"
             )
-            xbe_section_header.append(Type.int(4, False), "RawSize")
+            xbe_section_header.append(Type.int(0x4, False), "RawSize")
             xbe_section_header.append(
                 Type.pointer(self.arch, Type.char()), "SectionName"
             )
-            xbe_section_header.append(Type.int(4, False), "SectionReferenceCount")
+            xbe_section_header.append(Type.int(0x4, False), "SectionReferenceCount")
             xbe_section_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)),
                 "HeadReferenceCount",
@@ -271,10 +739,10 @@ class XBELoader(BinaryView):
         ) as xbe_library_version:
             xbe_library_version.packed = True
             xbe_library_version.append(Type.array(Type.char(), 0x8), "LibraryName")
-            xbe_library_version.append(Type.int(2, False), "MajorVersion")
-            xbe_library_version.append(Type.int(2, False), "MinorVersion")
-            xbe_library_version.append(Type.int(2, False), "BuildVersion")
-            xbe_library_version.append(Type.int(2, False), "LibraryFlags")
+            xbe_library_version.append(Type.int(0x2, False), "MajorVersion")
+            xbe_library_version.append(Type.int(0x2, False), "MinorVersion")
+            xbe_library_version.append(Type.int(0x2, False), "BuildVersion")
+            xbe_library_version.append(Type.int(0x2, False), "LibraryFlags")
 
         NumberOfLibraries = image_header.value["NumberOfLibraries"]
 
@@ -291,12 +759,12 @@ class XBELoader(BinaryView):
             self.raw, "IMAGE_TLS_DIRECTORY_32"
         ) as image_tls_directory:
             image_tls_directory.packed = True
-            image_tls_directory.append(Type.int(4, False), "StartAddressOfRawData")
-            image_tls_directory.append(Type.int(4, False), "EndAddressOfRawData")
-            image_tls_directory.append(Type.int(4, False), "AddressOfIndex")
-            image_tls_directory.append(Type.int(4, False), "AddressOfCallbacks")
-            image_tls_directory.append(Type.int(4, False), "SizeOfZeroFill")
-            image_tls_directory.append(Type.int(4, False), "Characteristics")
+            image_tls_directory.append(Type.int(0x4, False), "StartAddressOfRawData")
+            image_tls_directory.append(Type.int(0x4, False), "EndAddressOfRawData")
+            image_tls_directory.append(Type.int(0x4, False), "AddressOfIndex")
+            image_tls_directory.append(Type.int(0x4, False), "AddressOfCallbacks")
+            image_tls_directory.append(Type.int(0x4, False), "SizeOfZeroFill")
+            image_tls_directory.append(Type.int(0x4, False), "Characteristics")
 
         xbe_tls_sz = len(image_tls_directory)
         PointerToTlsDirectory = image_header.value["PointerToTlsDirectory"]
