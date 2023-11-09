@@ -445,7 +445,12 @@ class XBELoader(BinaryView):
                 "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/"
                 + database_zip_filename
             )
-            request_obj = requests.get(release_url, allow_redirects=True)
+            try:
+                request_obj = requests.get(release_url, allow_redirects=True)
+            except requests.exceptions.RequestException as e:
+                print("Unable to download XbSymbolDatabase analyzer: " + e)
+                return
+
             with open(download_filepath, "wb") as file_obj:
                 file_obj.write(request_obj.content)
 
