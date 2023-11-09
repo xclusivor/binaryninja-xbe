@@ -18,12 +18,14 @@ import subprocess
 import platform
 import pathlib
 import stat
+import ctypes
 
 
 class XBELoader(BinaryView):
     name = "XBE"
     long_name = name
     magic = b"XBEH"
+    kernel_thunk_table_addr = 0
 
     def __init__(self, data):
         BinaryView.__init__(self, file_metadata=data.file, parent_view=data)
@@ -46,9 +48,9 @@ class XBELoader(BinaryView):
         print("XBE analysis complete. Running XbeXbSymbolDatabase analyzer.")
 
         self.define_xbe_symbols()
-        self.process_imports()
+        self.process_imports(self.kernel_thunk_table_addr)
 
-    def process_imports(self):
+    def process_imports(self, address):
         kernel_exports = [
             "",
             "AvGetSavedDataAddress",
@@ -431,6 +433,21 @@ class XBELoader(BinaryView):
             "MmDbgWriteCheck",
         ]
 
+        while True:
+            data = self.get_data_var_at(address)
+            if data is None:
+                break
+
+            import_addr = ctypes.c_uint32(data.value).value
+
+            import_name = kernel_exports[import_addr & ~0x80000000]
+            self.define_auto_symbol(
+                Symbol(
+                    SymbolType.ExternalSymbol, address, "xboxkrnl.exe::" + import_name
+                )
+            )
+            address += 0x4
+
     def define_xbe_symbols(self):
         # Download latest XbSymbolDatabase release
         database_zip_filename = "XbSymbolDatabase.zip"
@@ -484,10 +501,10 @@ class XBELoader(BinaryView):
         output_split = output_stdout.splitlines()
         for line in output_split:
             symbol_and_address = line.split(b"=")
-            symbol = symbol_and_address[0].strip().decode()
-            address = hex(int(symbol_and_address[1].decode(), 16))
+            symbol = symbol_and_address[0].strip()
+            address = int(symbol_and_address[1].decode(), 16)
 
-            print(f'Found "{symbol}" at {address}. Creating label...')
+            print(f'Found "{symbol.decode()}" at {hex(address)}. Creating label...')
 
             # Not everything from analyzer output points to a functions, but MAY be a data ref. Need to differentiate.
             # Maybe check addr and see if in read-only data?
@@ -572,6 +589,18 @@ class XBELoader(BinaryView):
         image_header_raw = self.raw.get_data_var_at(0x0)
         ImageBase = image_header_raw.value["ImageBase"]
         SizeOfHeaders = image_header_raw.value["SizeOfHeaders"]
+
+        # Unscramble entry point
+        AddressOfEntryPoint = image_header_raw.value["AddressOfEntryPoint"]
+        is_debug = False
+        ENTRY_DEBUG = 0x94859D4B
+        ENTRY_RETAIL = 0xA8FC57AB
+        entry_point = AddressOfEntryPoint ^ ENTRY_DEBUG
+        if entry_point < 0x4000000:
+            is_debug = True
+        else:
+            entry_point = AddressOfEntryPoint ^ ENTRY_RETAIL
+        self.add_entry_point(entry_point)
 
         xbe_hdr_len = len(xbe_image_header)
         self.add_auto_segment(
@@ -785,5 +814,13 @@ class XBELoader(BinaryView):
             image_tls_directory,
             "IMAGE_TLS_DIRECTORY_32",
         )
+
+        # Process imports
+        PointerToKernelThunkTable = image_header_raw.value["PointerToKernelThunkTable"]
+        KTHUNK_DEBUG = 0xEFB1F152
+        KTHUNK_RETAIL = 0x5B6D40B6
+        self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_RETAIL
+        if is_debug:
+            self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_DEBUG
 
         return True
