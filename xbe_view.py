@@ -9,7 +9,10 @@ from binaryninja import (
     SectionSemantics,
     Symbol,
     SymbolType,
+    SymbolBinding
 )
+
+from binaryninja.log import log_error, log_info
 
 from zipfile import ZipFile
 import os
@@ -26,6 +29,13 @@ class XBELoader(BinaryView):
     long_name = name
     magic = b"XBEH"
     kernel_thunk_table_addr = 0
+
+    def log(self, msg, error=False):
+        msg = f"[XBE Loader] {msg}"
+        if not error:
+            log_info(msg)
+        else:
+            log_error(msg)
 
     def __init__(self, data):
         BinaryView.__init__(self, file_metadata=data.file, parent_view=data)
@@ -45,7 +55,7 @@ class XBELoader(BinaryView):
         return True
 
     def on_complete(self):
-        print("XBE analysis complete. Running XbeXbSymbolDatabase analyzer.")
+        self.log("Analysis complete. Running XbeXbSymbolDatabase analyzer.")
 
         self.define_xbe_symbols()
         self.process_imports(self.kernel_thunk_table_addr)
@@ -441,12 +451,14 @@ class XBELoader(BinaryView):
             import_addr = ctypes.c_uint32(data.value).value
 
             import_name = kernel_exports[import_addr & ~0x80000000]
+            self.log(f"Setting up kernel export \"{import_name}\" at {hex(import_addr)}")
             self.define_auto_symbol(
                 Symbol(
-                    SymbolType.ExternalSymbol, address, "xboxkrnl.exe::" + import_name
+                    SymbolType.LibraryFunctionSymbol, address, import_name, namespace="xboxkrnl.exe", binding=SymbolBinding.GlobalBinding
                 )
             )
             address += 0x4
+        self.log("Done setting up kernel expors!")
 
     def define_xbe_symbols(self):
         # Download latest XbSymbolDatabase release
@@ -457,7 +469,7 @@ class XBELoader(BinaryView):
             current_file_filepath + "/" + pathlib.Path(download_filepath).stem
         )
         if not os.path.exists(extract_path):
-            print(f"Downloading XbSymbolDatabase analyzer")
+            self.log(f"Downloading XbSymbolDatabase analyzer")
             release_url = (
                 "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/"
                 + database_zip_filename
@@ -465,7 +477,7 @@ class XBELoader(BinaryView):
             try:
                 request_obj = requests.get(release_url, allow_redirects=True)
             except requests.exceptions.RequestException as e:
-                print("Unable to download XbSymbolDatabase analyzer: " + e)
+                self.log("Unable to download XbSymbolDatabase analyzer: " + e, error=True)
                 return
 
             with open(download_filepath, "wb") as file_obj:
@@ -501,16 +513,19 @@ class XBELoader(BinaryView):
         output_split = output_stdout.splitlines()
         for line in output_split:
             symbol_and_address = line.split(b"=")
-            symbol = symbol_and_address[0].strip()
+            mangled_symbol = symbol_and_address[0].strip().decode()
             address = int(symbol_and_address[1].decode(), 16)
 
-            print(f'Found "{symbol.decode()}" at {hex(address)}. Creating label...')
+            self.log(f'Found "{mangled_symbol}" at {hex(address)}. Creating demangled label...')
 
             # Not everything from analyzer output points to a functions, but MAY be a data ref. Need to differentiate.
             # Maybe check addr and see if in read-only data?
-            self.define_auto_symbol(Symbol(SymbolType.FunctionSymbol, address, symbol))
 
-        print("Done adding symbols from XbSymbolDatabase")
+            demangled_symbol = mangled_symbol.split("__")
+            demangled_namespace = demangled_symbol[0]
+            self.define_auto_symbol(Symbol(SymbolType.FunctionSymbol, address, mangled_symbol, namespace=demangled_namespace))
+
+        self.log("Done adding symbols from XbSymbolDatabase")
 
     def init(self):
         self.arch = Architecture["x86"]
@@ -601,6 +616,13 @@ class XBELoader(BinaryView):
         else:
             entry_point = AddressOfEntryPoint ^ ENTRY_RETAIL
         self.add_entry_point(entry_point)
+
+        PointerToKernelThunkTable = image_header_raw.value["PointerToKernelThunkTable"]
+        KTHUNK_DEBUG = 0xEFB1F152
+        KTHUNK_RETAIL = 0x5B6D40B6
+        self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_RETAIL
+        if is_debug:
+            self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_DEBUG
 
         xbe_hdr_len = len(xbe_image_header)
         self.add_auto_segment(
@@ -814,13 +836,5 @@ class XBELoader(BinaryView):
             image_tls_directory,
             "IMAGE_TLS_DIRECTORY_32",
         )
-
-        # Process imports
-        PointerToKernelThunkTable = image_header_raw.value["PointerToKernelThunkTable"]
-        KTHUNK_DEBUG = 0xEFB1F152
-        KTHUNK_RETAIL = 0x5B6D40B6
-        self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_RETAIL
-        if is_debug:
-            self.kernel_thunk_table_addr = PointerToKernelThunkTable ^ KTHUNK_DEBUG
 
         return True
