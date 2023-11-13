@@ -1,37 +1,16 @@
-# binaryninja-xbe (v1.0)
-Author: **xclusivor**
+binaryninja-xbe
+==========
+Xbox Executable (XBE) Loader plugin for [Binary Ninja](https://binary.ninja/)
 
-_Loader for Original Xbox Executables_
+This will download and execute the [XbSymbolDatabase](https://github.com/Cxbx-Reloaded/XbSymbolDatabase) analyzer for library symbol recovery.
 
-## Description:
+Installation
+--------------
+Clone this repo into your Binary Ninja plugin directory.
 
-Loader for Original Xbox Executables
+You can manually install the symbol analyzer by extracting it the into root of the plugins directory.
+e.g. `$XBE_PLUGIN_DIR/XbSymbolDatabase/linux_x64/bin/XbSymbolDatabaseCLI`
 
-
-## Installation Instructions
-
-### Darwin
-
-
-
-### Windows
-
-
-
-### Linux
-
-
-
-## Minimum Version
-
-This plugin requires the following minimum version of Binary Ninja:
-
-* 4526
-
-
-## License
-
-This plugin is released under a MIT license.
-## Metadata Version
-
-2
+Credits
+--------------
+Inspired by [ghidra-xbe](https://github.com/XboxDev/ghidra-xbe/tree/master)
