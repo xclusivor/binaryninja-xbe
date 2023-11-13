@@ -1,6 +1,6 @@
 {
     "pluginmetadataversion": 2,
-    "name": "binaryninja-xbe",
+    "name": "Original Xbox Executable Loader",
     "author": "xclusivor",
     "type": [
         "binaryview"
