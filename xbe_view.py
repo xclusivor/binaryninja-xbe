@@ -547,7 +547,7 @@ class XBELoader(BinaryView):
                 "Unable to reach XbSymbolDatabase GitHub release: " + e, error=True
             )
             return
-        db_version_file = current_file_filepath + "/" + "xbe_analyzer_ver"
+        db_version_file = current_file_filepath + '/' + "xbe_analyzer_ver"
 
         # Get version string of local database tool, if previously downloaded
         if os.path.exists(extract_path):
@@ -597,8 +597,9 @@ class XBELoader(BinaryView):
         output_stdout = output.stdout
         output_split = output_stdout.splitlines()
         for line in output_split:
-            symbol_and_address = line.split(b"=")
+            symbol_and_address = line.split(b'=')
             mangled_symbol = symbol_and_address[0].strip().decode()
+            mangled_symbol = mangled_symbol.replace("__", "::", 1)
             address = int(symbol_and_address[1].decode(), 16)
 
             self.log(f'Found "{mangled_symbol}" at {hex(address)}. Creating label...')
@@ -606,7 +607,7 @@ class XBELoader(BinaryView):
             # Not everything from analyzer output points to a function, but MAY be a data ref. Need to differentiate.
             # Maybe check addr and see if in read-only data?
 
-            demangled_symbol = mangled_symbol.split("__")
+            demangled_symbol = mangled_symbol.split("::")
             demangled_namespace = demangled_symbol[0]
             self.define_auto_symbol(
                 Symbol(
