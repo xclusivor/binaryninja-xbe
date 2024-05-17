@@ -511,10 +511,10 @@ class XBELoader(BinaryView):
         Download, extract and run the XbSymbolDatabase analyzer tool.
         Create symbols from its analysis.
         '''
-        self.log("Running XbSymbolDatabase analyzer.")
 
         # Download latest XbSymbolDatabase release
-        analyzer_zip_filename = "XbSymbolDatabase.zip"
+        release_url = "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/XbSymbolDatabase.zip"
+        analyzer_zip_filename = release_url.split("/").pop()
         current_file_filepath = str(pathlib.Path(__file__).parent.resolve())
         download_filepath = current_file_filepath + '/' + analyzer_zip_filename
         extract_path = (
@@ -524,8 +524,9 @@ class XBELoader(BinaryView):
         # Get correct filepath for host
         os_plat = platform.system()
         analyzer_tool_name = "XbSymbolDatabaseCLI"
-        analyzer_tool_filepath = ""
+        analyzer_tool_filepath = str()
         if os_plat == "Windows":
+            # Binja doesn't support 32-bit hosts so we won't bother checking here
             analyzer_tool_filepath = (
                 "win_x64/bin/" + analyzer_tool_name + ".exe"
             )
@@ -538,13 +539,25 @@ class XBELoader(BinaryView):
                 "macos_x64/bin/" + analyzer_tool_name
             )
 
-        # Download and extract if symbol analyzer doesn't already exist
-        if not os.path.exists(extract_path):
-            self.log(f"Downloading XbSymbolDatabase analyzer")
-            release_url = (
-                "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/"
-                + analyzer_zip_filename
+        # Get version string to check for an update
+        try:
+            release_version = requests.get(os.path.dirname(release_url)).url.split("/").pop()
+        except requests.exceptions.RequestException as e:
+            self.log(
+                "Unable to reach XbSymbolDatabase GitHub release: " + e, error=True
             )
+            return
+        db_version_file = current_file_filepath + "/" + "xbe_analyzer_ver"
+
+        # Get version string of local database tool, if previously downloaded
+        if os.path.exists(extract_path):
+            with open(db_version_file, "r") as file_obj:
+                current_version = file_obj.readline()
+
+        # Download and extract if symbol analyzer doesn't already exist
+        # or if release versions differ, download the latest update
+        if not os.path.exists(extract_path) or release_version != current_version:
+            self.log(f"Downloading XbSymbolDatabase analyzer")
             try:
                 request_obj = requests.get(release_url, allow_redirects=True)
             except requests.exceptions.RequestException as e:
@@ -552,10 +565,16 @@ class XBELoader(BinaryView):
                     "Unable to download XbSymbolDatabase analyzer: " + e, error=True
                 )
                 return
+            
+            # Write version to file
+            with open(db_version_file, "w") as file_obj:
+                file_obj.write(release_version)
 
+            # Write analyzer archive
             with open(download_filepath, "wb") as file_obj:
                 file_obj.write(request_obj.content)
 
+            # Extract analyzer archive
             with ZipFile(download_filepath, "r") as zip_obj:
                 zip_obj.extract(analyzer_tool_filepath, extract_path)
 
@@ -567,11 +586,14 @@ class XBELoader(BinaryView):
         # Make symbol analyzer executable
         st = os.stat(analyzer_tool_filepath)
         os.chmod(analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
+
+        self.log("Running XbSymbolDatabase analyzer.")
         output = subprocess.run(
             [analyzer_tool_filepath, xbe_filepath], capture_output=True
         )
 
         # Parse analyzer output
+        # Format is: function_name = function_address
         output_stdout = output.stdout
         output_split = output_stdout.splitlines()
         for line in output_split:
@@ -581,7 +603,7 @@ class XBELoader(BinaryView):
 
             self.log(f'Found "{mangled_symbol}" at {hex(address)}. Creating label...')
 
-            # Not everything from analyzer output points to a functions, but MAY be a data ref. Need to differentiate.
+            # Not everything from analyzer output points to a function, but MAY be a data ref. Need to differentiate.
             # Maybe check addr and see if in read-only data?
 
             demangled_symbol = mangled_symbol.split("__")
