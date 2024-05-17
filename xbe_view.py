@@ -835,10 +835,6 @@ class XBELoader(BinaryView):
         FLAG_TAIL_PAGE_READ_ONLY = 0x00000020
 
         readable = SegmentFlag.SegmentReadable
-        writable = 0
-        executable = 0
-        code = 0
-        data = 0
         section_semantics = SectionSemantics.DefaultSectionSemantics
 
         xbe_sections = self.get_data_var_at(PointerToSectionTable)
@@ -850,13 +846,18 @@ class XBELoader(BinaryView):
 
             Flags = section.value["Flags"]
 
+            writable = 0
+            executable = 0
+            code = 0
+            data = 0
+            
             if Flags & FLAG_WRITABLE:
                 writable = SegmentFlag.SegmentWritable
             if Flags & FLAG_EXECUTABLE:
                 executable = SegmentFlag.SegmentExecutable
                 code = SegmentFlag.SegmentContainsCode
                 section_semantics = SectionSemantics.ReadOnlyCodeSectionSemantics
-            elif (Flags & FLAG_WRITABLE) == 0 and (
+            if (Flags & FLAG_WRITABLE) == 0 and (
                 Flags & FLAG_EXECUTABLE
             ) == 0:
                 data = SegmentFlag.SegmentContainsData
