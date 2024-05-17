@@ -448,6 +448,7 @@ class XBELoader(BinaryView):
         ]
 
         extern_addrs = list()
+        test = dict()
         while True:
             data = self.get_data_var_at(address)
             if data is None:
@@ -461,35 +462,47 @@ class XBELoader(BinaryView):
             # Create data ref symbols in main binary
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
-                    SymbolType.DataSymbol,
+                    SymbolType.ImportAddressSymbol,
                     address,
                     import_name,
+                    namespace="xboxkrnl.exe",
+                    binding=SymbolBinding.NoBinding,
                 ),
-                Type.pointer(self.arch, Type.int(0x4, False)),
+                Type.int(0x4, False),
             )
 
-            # Create external function symbols
-            self.define_auto_symbol(
-                Symbol(
-                    SymbolType.LibraryFunctionSymbol,
-                    import_addr,
-                    import_name,
-                    namespace="xboxkrnl.exe",
-                    binding=SymbolBinding.GlobalBinding,
-                )
-            )
+            test[import_addr] = import_name
+
             address += 0x4
 
         extern_addrs.sort()
 
         # Map external segment
         self.add_auto_segment(
-            extern_addrs[0],
-            extern_addrs[-1] - extern_addrs[0],
+            extern_addrs[0] - 1,
+            extern_addrs[-1] - extern_addrs[0] + 1,
             0,
             0,
-            SegmentFlag.SegmentContainsData,
+            0
         )
+            
+        self.add_auto_section(
+            ".extern",
+            extern_addrs[0] - 1,
+            extern_addrs[-1] - extern_addrs[0] + 1,
+            SectionSemantics.ExternalSectionSemantics
+        )
+
+        # Create external function symbols
+        for import_addr, import_name in test.items():
+            self.define_auto_symbol(
+                Symbol(
+                    SymbolType.ExternalSymbol,
+                    import_addr,
+                    import_name,
+                    binding=SymbolBinding.NoBinding,
+                )
+            )
 
         self.log("Done setting up kernel exports!")
 
@@ -498,7 +511,7 @@ class XBELoader(BinaryView):
         Download, extract and run the XbSymbolDatabase analyzer tool.
         Create symbols from its analysis.
         '''
-        self.log("Running XbeXbSymbolDatabase analyzer.")
+        self.log("Running XbSymbolDatabase analyzer.")
 
         # Download latest XbSymbolDatabase release
         analyzer_zip_filename = "XbSymbolDatabase.zip"
@@ -858,7 +871,7 @@ class XBELoader(BinaryView):
 
         NumberOfLibraries = image_header.value["NumberOfLibraries"]
 
-        xbe_library_version_list = Type.array(xbe_library_version, NumberOfLibraries)
+        xbe_library_version_list = Type.array(xbe_library_version, NumberOfLibraries + 1)
 
         PointerToLibraries = image_header.value["PointerToLibraries"]
         self.define_data_var(
