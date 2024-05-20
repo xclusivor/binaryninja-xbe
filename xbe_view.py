@@ -42,6 +42,11 @@ class XBELoader(BinaryView):
         BinaryView.__init__(self, file_metadata=data.file, parent_view=data)
         self.raw = data
 
+        # If arguement recovery is implemented this
+        # should probably be moved to on_complete incase a function
+        # hasn't been completely analyzed
+        self.define_xbe_symbols()
+
     @classmethod
     def is_valid_for_data(cls, data):
         return data.read(0x0, 0x4) == cls.magic
@@ -56,7 +61,6 @@ class XBELoader(BinaryView):
         return True
 
     def on_complete(self):
-        self.define_xbe_symbols()
         self.process_imports(self.kernel_thunk_table_addr)
 
     def process_imports(self, address):
@@ -455,11 +459,11 @@ class XBELoader(BinaryView):
                 break
 
             import_addr = ctypes.c_uint32(data.value).value
-            extern_addrs.append(import_addr)
+            extern_addrs.append(hex(import_addr))
             import_name = kernel_exports[import_addr & ~0x80000000]
             self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
 
-            # Create data ref symbols in main binary
+            # Create data ref symbols in proper section
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
                     SymbolType.ImportAddressSymbol,
@@ -472,27 +476,36 @@ class XBELoader(BinaryView):
             )
 
             test[import_addr] = import_name
+            # self.define_auto_symbol(
+            #     Symbol(
+            #         SymbolType.ExternalSymbol,
+            #         import_addr,
+            #         import_name,
+            #         binding=SymbolBinding.NoBinding,
+            #     )
+            # )
 
             address += 0x4
 
         extern_addrs.sort()
+        extern_addrs = [int(x, 16) for x in extern_addrs]
 
         # Map external segment
         self.add_auto_segment(
-            extern_addrs[0] - 1,
-            extern_addrs[-1] - extern_addrs[0] + 1,
+            extern_addrs[0],
+            extern_addrs[-1] - extern_addrs[0],
             0,
             0,
             0
         )
-            
+
         self.add_auto_section(
             ".extern",
-            extern_addrs[0] - 1,
-            extern_addrs[-1] - extern_addrs[0] + 1,
+            extern_addrs[0],
+            extern_addrs[-1] - extern_addrs[0],
             SectionSemantics.ExternalSectionSemantics
         )
-
+        
         # Create external function symbols
         for import_addr, import_name in test.items():
             self.define_auto_symbol(
@@ -503,6 +516,7 @@ class XBELoader(BinaryView):
                     binding=SymbolBinding.NoBinding,
                 )
             )
+        
 
         self.log("Done setting up kernel exports!")
 
@@ -512,119 +526,117 @@ class XBELoader(BinaryView):
         Create symbols from its analysis.
         '''
 
-        # Download latest XbSymbolDatabase release
+        # Setup paths
         release_url = "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/XbSymbolDatabase.zip"
-        analyzer_zip_filename = release_url.split("/").pop()
+        analyzer_zip_filename = pathlib.Path(release_url).name
         current_file_filepath = str(pathlib.Path(__file__).parent.resolve())
-        download_filepath = current_file_filepath + '/' + analyzer_zip_filename
-        extract_path = (
-            current_file_filepath + '/' + pathlib.Path(download_filepath).stem
-        )
+        download_filepath = os.path.join(current_file_filepath, analyzer_zip_filename)
+        extract_path = os.path.join(current_file_filepath, pathlib.Path(download_filepath).stem)
 
         # Get correct filepath for host
         os_plat = platform.system()
         analyzer_tool_name = "XbSymbolDatabaseCLI"
         analyzer_tool_filepath = str()
         if os_plat == "Windows":
-            # Binja doesn't support 32-bit hosts so we won't bother checking here
+            # Analyzer tool supports 32-bit hosts but Binja does not so we won't bother checking here
             analyzer_tool_filepath = (
-                "win_x64/bin/" + analyzer_tool_name + ".exe"
+                os.path.join("win_x64/bin/", analyzer_tool_name + ".exe")
             )
         elif os_plat == "Linux":
             analyzer_tool_filepath = (
-                "linux_x64/bin/" + analyzer_tool_name
+                os.path.join("linux_x64/bin/", analyzer_tool_name)
             )
         elif os_plat == "Darwin":
             analyzer_tool_filepath = (
-                "macos_x64/bin/" + analyzer_tool_name
+                os.path.join("macos_x64/bin/", analyzer_tool_name)
             )
 
         # Get version string to check for an update
         try:
-            release_version = requests.get(os.path.dirname(release_url)).url.split("/").pop()
+            release_version = pathlib.Path(requests.get(os.path.dirname(release_url)).url).name
+            db_version_file = os.path.join(current_file_filepath, "xbe_analyzer_ver")
+
+            # Get version string of local database tool, if previously downloaded
+            if os.path.exists(extract_path):
+                with open(db_version_file, "r") as file_obj:
+                    current_version = file_obj.readline()
+
+            # Download and extract if symbol analyzer doesn't already exist
+            # or if release versions differ, download the latest update
+            if not os.path.exists(extract_path) or release_version != current_version:
+                self.log(f"Downloading XbSymbolDatabase analyzer")
+                try:
+                    request_obj = requests.get(release_url, allow_redirects=True)
+                except requests.exceptions.RequestException as e:
+                    self.log(
+                        "Unable to download XbSymbolDatabase analyzer: " + str(e), error=True
+                    )
+                    return
+
+                # Write version to file
+                with open(db_version_file, "w") as file_obj:
+                    file_obj.write(release_version)
+
+                # Write analyzer archive
+                with open(download_filepath, "wb") as file_obj:
+                    file_obj.write(request_obj.content)
+
+                # Extract analyzer archive
+                with ZipFile(download_filepath, "r") as zip_obj:
+                    zip_obj.extract(analyzer_tool_filepath, extract_path)
+
         except requests.exceptions.RequestException as e:
             self.log(
-                "Unable to reach XbSymbolDatabase GitHub release: " + e, error=True
+                "Unable to reach XbSymbolDatabase GitHub release: " + str(e), error=True
             )
+
+        analyzer_tool_filepath = os.path.join(extract_path, analyzer_tool_filepath)
+        if os.path.exists(analyzer_tool_filepath):
+            # Get current binary filepath
+            xbe_filepath = self.file.original_filename
+
+            # Make symbol analyzer executable
+            st = os.stat(analyzer_tool_filepath)
+            os.chmod(analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
+
+            self.log("Running XbSymbolDatabase analyzer.")
+            output = subprocess.run(
+                [analyzer_tool_filepath, xbe_filepath], capture_output=True
+            )
+
+            # Parse analyzer output
+            # Format is: function_name = function_address
+            output_split = output.stdout.splitlines()
+            for line in output_split:
+                symbol_and_address = line.split(b'=')
+                mangled_symbol = symbol_and_address[0].strip().decode()
+                demangled_namespace, demangled_symbol = mangled_symbol.split("__", 1)
+
+                address = int(symbol_and_address[1].decode(), 16)
+                self.log(f'Found "{demangled_symbol}" at {hex(address)}. Creating label...')
+
+                # Not everything from analyzer output points to a function, but MAY be a data ref. Need to differentiate.
+                # Maybe check addr and see if in read-only data?
+
+                self.define_auto_symbol(
+                    Symbol(
+                        SymbolType.FunctionSymbol,
+                        address,
+                        demangled_symbol,
+                        namespace=demangled_namespace,
+                    )
+                )
+
+            self.log("Done adding symbols from XbSymbolDatabase")
             return
-        db_version_file = current_file_filepath + '/' + "xbe_analyzer_ver"
-
-        # Get version string of local database tool, if previously downloaded
-        if os.path.exists(extract_path):
-            with open(db_version_file, "r") as file_obj:
-                current_version = file_obj.readline()
-
-        # Download and extract if symbol analyzer doesn't already exist
-        # or if release versions differ, download the latest update
-        if not os.path.exists(extract_path) or release_version != current_version:
-            self.log(f"Downloading XbSymbolDatabase analyzer")
-            try:
-                request_obj = requests.get(release_url, allow_redirects=True)
-            except requests.exceptions.RequestException as e:
-                self.log(
-                    "Unable to download XbSymbolDatabase analyzer: " + e, error=True
-                )
-                return
-            
-            # Write version to file
-            with open(db_version_file, "w") as file_obj:
-                file_obj.write(release_version)
-
-            # Write analyzer archive
-            with open(download_filepath, "wb") as file_obj:
-                file_obj.write(request_obj.content)
-
-            # Extract analyzer archive
-            with ZipFile(download_filepath, "r") as zip_obj:
-                zip_obj.extract(analyzer_tool_filepath, extract_path)
-
-        analyzer_tool_filepath = extract_path + '/' + analyzer_tool_filepath
-
-        # Get current binary filepath
-        xbe_filepath = self.file.original_filename
-
-        # Make symbol analyzer executable
-        st = os.stat(analyzer_tool_filepath)
-        os.chmod(analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
-
-        self.log("Running XbSymbolDatabase analyzer.")
-        output = subprocess.run(
-            [analyzer_tool_filepath, xbe_filepath], capture_output=True
-        )
-
-        # Parse analyzer output
-        # Format is: function_name = function_address
-        output_stdout = output.stdout
-        output_split = output_stdout.splitlines()
-        for line in output_split:
-            symbol_and_address = line.split(b'=')
-            mangled_symbol = symbol_and_address[0].strip().decode()
-            mangled_symbol = mangled_symbol.replace("__", "::", 1)
-            address = int(symbol_and_address[1].decode(), 16)
-
-            self.log(f'Found "{mangled_symbol}" at {hex(address)}. Creating label...')
-
-            # Not everything from analyzer output points to a function, but MAY be a data ref. Need to differentiate.
-            # Maybe check addr and see if in read-only data?
-
-            demangled_symbol = mangled_symbol.split("::")
-            demangled_namespace = demangled_symbol[0]
-            self.define_auto_symbol(
-                Symbol(
-                    SymbolType.FunctionSymbol,
-                    address,
-                    mangled_symbol,
-                    namespace=demangled_namespace,
-                )
-            )
-
-        self.log("Done adding symbols from XbSymbolDatabase")
+        
+        self.log("XbSymbolDatabase analyzer not found. Skipping symbol resolution.", error=True)
 
     def init(self):
         self.arch = Architecture["x86"]
         self.platform = self.arch.standalone_platform
 
-        # After binja has completed its analysis we do our own
+        # After Binja has completed its analysis we do our own
         self.add_analysis_completion_event(self.on_complete)
 
         with StructureBuilder.builder(self.raw, "XBE_IMAGE_HEADER") as xbe_image_header:
