@@ -614,6 +614,8 @@ class XBELoader(BinaryView):
                 if "g_" in demangled_symbol:
                     symbol_type = SymbolType.DataSymbol
 
+                #TODO: Try to differentiate between code and data symbols from database
+
                 self.define_auto_symbol(
                     Symbol(
                         symbol_type,
