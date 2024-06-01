@@ -449,7 +449,7 @@ class XBELoader(BinaryView):
         ]
 
         extern_addrs = list()
-        test = dict()
+        import_names_and_Addrs = dict()
         while True:
             data = self.get_data_var_at(address)
             if data is None:
@@ -471,12 +471,11 @@ class XBELoader(BinaryView):
                 Type.int(0x4, False),
             )
 
-            test[import_addr] = import_name
+            import_names_and_Addrs[import_addr] = import_name
 
             address += 0x4
 
         extern_addrs.sort()
-        # extern_addrs = [int(x, 16) for x in extern_addrs]
 
         # Map external segment
         self.add_auto_segment(
@@ -491,7 +490,7 @@ class XBELoader(BinaryView):
         )
 
         # Create external function symbols
-        for import_addr, import_name in test.items():
+        for import_addr, import_name in import_names_and_Addrs.items():
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
                     SymbolType.ExternalSymbol,
