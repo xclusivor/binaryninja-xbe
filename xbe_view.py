@@ -881,7 +881,7 @@ class XBELoader(BinaryView):
 
 
             # Not sure how out of hand we should get here. Plenty of other sections
-            # specific to particular binaires that could be accountded for here
+            # specific to particular binaries that could be accounted for here
             SectionName = section.value["SectionName"]
             SectionName = self.get_ascii_string_at(SectionName, min_length=0)
             if str(SectionName) == ".rdata":
