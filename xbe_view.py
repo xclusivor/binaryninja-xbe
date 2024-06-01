@@ -28,7 +28,7 @@ class XBELoader(BinaryView):
     name = "XBE"
     long_name = name
     magic = b"XBEH"
-    
+
     kernel_thunk_table_addr = 0
 
     def log(self, msg, error=False):
@@ -60,11 +60,12 @@ class XBELoader(BinaryView):
         self.process_imports(self.kernel_thunk_table_addr)
 
     def process_imports(self, address):
-        '''
+        """
         Get external functional symbols via the unscrambled value of PointerToKernelThunkTable in the XBE header.
 
         Calculate the import addresses and their matching symbol, then define the external symbols.
-        '''
+        """
+
         kernel_exports = [
             "",                                     # 0
             "AvGetSavedDataAddress",                # 1
@@ -479,11 +480,7 @@ class XBELoader(BinaryView):
 
         # Map external segment
         self.add_auto_segment(
-            extern_addrs[0] - 1,
-            extern_addrs[-1] - extern_addrs[0] +  1,
-            0,
-            0,
-            0
+            extern_addrs[0] - 1, extern_addrs[-1] - extern_addrs[0] + 1, 0, 0, 0
         )
 
         self.add_auto_section(
@@ -492,7 +489,7 @@ class XBELoader(BinaryView):
             extern_addrs[-1] - extern_addrs[0] + 1,
             SectionSemantics.ExternalSectionSemantics,
         )
-        
+
         # Create external function symbols
         for import_addr, import_name in test.items():
             self.define_auto_symbol_and_var_or_function(
@@ -500,27 +497,28 @@ class XBELoader(BinaryView):
                     SymbolType.ExternalSymbol,
                     import_addr,
                     import_name,
-                    binding=SymbolBinding.NoBinding
+                    binding=SymbolBinding.NoBinding,
                 ),
                 Type.int(0x4, False),
             )
             self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
-        
 
         self.log("Done setting up kernel exports!")
 
     def define_xbe_symbols(self):
-        '''
+        """
         Download, extract and run the XbSymbolDatabase analyzer tool.
         Create symbols from its analysis.
-        '''
+        """
 
         # Setup paths
         release_url = "https://github.com/Cxbx-Reloaded/XbSymbolDatabase/releases/latest/download/XbSymbolDatabase.zip"
         analyzer_zip_filename = pathlib.Path(release_url).name
         current_file_filepath = str(pathlib.Path(__file__).parent.resolve())
         download_filepath = os.path.join(current_file_filepath, analyzer_zip_filename)
-        extract_path = os.path.join(current_file_filepath, pathlib.Path(download_filepath).stem)
+        extract_path = os.path.join(
+            current_file_filepath, pathlib.Path(download_filepath).stem
+        )
 
         # Get correct filepath for host
         os_plat = platform.system()
@@ -528,21 +526,19 @@ class XBELoader(BinaryView):
         analyzer_tool_filepath = str()
         if os_plat == "Windows":
             # Analyzer tool supports 32-bit hosts but Binja does not so we won't bother checking here
-            analyzer_tool_filepath = (
-                os.path.join("win_x64/bin/", analyzer_tool_name + ".exe")
+            analyzer_tool_filepath = os.path.join(
+                "win_x64/bin/", analyzer_tool_name + ".exe"
             )
         elif os_plat == "Linux":
-            analyzer_tool_filepath = (
-                os.path.join("linux_x64/bin/", analyzer_tool_name)
-            )
+            analyzer_tool_filepath = os.path.join("linux_x64/bin/", analyzer_tool_name)
         elif os_plat == "Darwin":
-            analyzer_tool_filepath = (
-                os.path.join("macos_x64/bin/", analyzer_tool_name)
-            )
+            analyzer_tool_filepath = os.path.join("macos_x64/bin/", analyzer_tool_name)
 
         # Get version string to check for an update
         try:
-            release_version = pathlib.Path(requests.get(os.path.dirname(release_url)).url).name
+            release_version = pathlib.Path(
+                requests.get(os.path.dirname(release_url)).url
+            ).name
             db_version_file = os.path.join(current_file_filepath, "xbe_analyzer_ver")
 
             # Get version string of local database tool, if previously downloaded
@@ -558,7 +554,8 @@ class XBELoader(BinaryView):
                     request_obj = requests.get(release_url, allow_redirects=True)
                 except requests.exceptions.RequestException as e:
                     self.log(
-                        "Unable to download XbSymbolDatabase analyzer: " + str(e), error=True
+                        "Unable to download XbSymbolDatabase analyzer: " + str(e),
+                        error=True,
                     )
                     return
 
@@ -597,7 +594,7 @@ class XBELoader(BinaryView):
             # Format is: function_name = function_address
             output_split = output.stdout.splitlines()
             for line in output_split:
-                symbol_and_address = line.split(b'=')
+                symbol_and_address = line.split(b"=")
                 mangled_symbol = symbol_and_address[0].strip().decode()
                 demangled_namespace, demangled_symbol = mangled_symbol.split("__", 1)
 
@@ -607,7 +604,9 @@ class XBELoader(BinaryView):
                 if self.get_segment_at(address) is None:
                     pass
 
-                self.log(f'Found "{demangled_symbol}" at {hex(address)}. Creating label...')
+                self.log(
+                    f'Found "{demangled_symbol}" at {hex(address)}. Creating label...'
+                )
 
                 symbol_type = SymbolType.FunctionSymbol
 
@@ -627,8 +626,11 @@ class XBELoader(BinaryView):
 
             self.log("Done adding symbols from XbSymbolDatabase")
             return
-        
-        self.log("XbSymbolDatabase analyzer not found. Skipping symbol resolution.", error=True)
+
+        self.log(
+            "XbSymbolDatabase analyzer not found. Skipping symbol resolution.",
+            error=True,
+        )
 
     def init(self):
         self.arch = Architecture["x86"]
@@ -638,7 +640,9 @@ class XBELoader(BinaryView):
         self.add_analysis_completion_event(self.on_complete)
 
         xbe_image_header_type_name = "XBE_IMAGE_HEADER"
-        with StructureBuilder.builder(self.raw, xbe_image_header_type_name) as xbe_image_header:
+        with StructureBuilder.builder(
+            self.raw, xbe_image_header_type_name
+        ) as xbe_image_header:
             xbe_image_header.packed = True
             xbe_image_header.append(Type.array(Type.char(), 0x4), "magic")
             xbe_image_header.append(Type.array(Type.char(), 0x100), "Signature")
@@ -705,7 +709,7 @@ class XBELoader(BinaryView):
             xbe_image_header.append(Type.int(0x4, False), "SizeOfLogoBitmap")
 
             self.raw.define_data_var(0x0, xbe_image_header, xbe_image_header_type_name)
-            
+
         image_header_raw = self.raw.get_data_var_at(0x0)
         ImageBase = image_header_raw.value["ImageBase"]
         SizeOfHeaders = image_header_raw.value["SizeOfHeaders"]
@@ -749,9 +753,17 @@ class XBELoader(BinaryView):
         if SizeOfImageHeader >= 0x184:
             xbe_image_header.append(Type.int(0x4, False), "DebugInfo")
 
-        xbe_image_header_type_id = Type.generate_auto_type_id("xbe", xbe_image_header_type_name)
-        self.define_type(xbe_image_header_type_id, xbe_image_header_type_name, xbe_image_header)
-        self.define_data_var(ImageBase, self.types[xbe_image_header_type_name], xbe_image_header_type_name)
+        xbe_image_header_type_id = Type.generate_auto_type_id(
+            "xbe", xbe_image_header_type_name
+        )
+        self.define_type(
+            xbe_image_header_type_id, xbe_image_header_type_name, xbe_image_header
+        )
+        self.define_data_var(
+            ImageBase,
+            self.types[xbe_image_header_type_name],
+            xbe_image_header_type_name,
+        )
 
         image_header = self.get_data_var_at(ImageBase)
         certificate_address = image_header.value["CertificateHeader"]
@@ -801,9 +813,19 @@ class XBELoader(BinaryView):
             xbe_certificate_header.append(
                 Type.array(Type.char(), 0x10), "CodeEncryptionKey"
             )
-        xbe_certificate_header_type_id = Type.generate_auto_type_id("xbe", xbe_certificate_header_type_name)
-        self.define_type(xbe_certificate_header_type_id, xbe_certificate_header_type_name, xbe_certificate_header)
-        self.define_data_var(certificate_address, self.types[xbe_certificate_header_type_name], xbe_certificate_header_type_name)
+        xbe_certificate_header_type_id = Type.generate_auto_type_id(
+            "xbe", xbe_certificate_header_type_name
+        )
+        self.define_type(
+            xbe_certificate_header_type_id,
+            xbe_certificate_header_type_name,
+            xbe_certificate_header,
+        )
+        self.define_data_var(
+            certificate_address,
+            self.types[xbe_certificate_header_type_name],
+            xbe_certificate_header_type_name,
+        )
 
         xbe_section_header_type_name = "XBE_SECTION_HEADER"
         with StructureBuilder.builder(
@@ -835,10 +857,16 @@ class XBELoader(BinaryView):
 
         NumberOfSections = image_header.value["NumberOfSections"]
         PointerToSectionTable = image_header.value["PointerToSectionTable"]
-        
-        be_section_header_type_id = Type.generate_auto_type_id("xbe", xbe_section_header_type_name)
-        self.define_type(be_section_header_type_id, xbe_section_header_type_name, xbe_section_header)
-        xbe_section_header_list = Type.array(self.types[xbe_section_header_type_name], NumberOfSections)
+
+        be_section_header_type_id = Type.generate_auto_type_id(
+            "xbe", xbe_section_header_type_name
+        )
+        self.define_type(
+            be_section_header_type_id, xbe_section_header_type_name, xbe_section_header
+        )
+        xbe_section_header_list = Type.array(
+            self.types[xbe_section_header_type_name], NumberOfSections
+        )
 
         self.define_data_var(
             PointerToSectionTable,
@@ -869,19 +897,16 @@ class XBELoader(BinaryView):
             executable = 0
             code = 0
             data = 0
-            
+
             if Flags & FLAG_WRITABLE:
                 writable = SegmentFlag.SegmentWritable
             if Flags & FLAG_EXECUTABLE:
                 executable = SegmentFlag.SegmentExecutable
                 code = SegmentFlag.SegmentContainsCode
                 section_semantics = SectionSemantics.ReadOnlyCodeSectionSemantics
-            if (Flags & FLAG_WRITABLE) == 0 and (
-                Flags & FLAG_EXECUTABLE
-            ) == 0:
+            if (Flags & FLAG_WRITABLE) == 0 and (Flags & FLAG_EXECUTABLE) == 0:
                 data = SegmentFlag.SegmentContainsData
                 section_semantics = SectionSemantics.ReadOnlyDataSectionSemantics
-
 
             # Not sure how out of hand we should get here. Plenty of other sections
             # specific to particular binaries that could be accounted for here
@@ -926,9 +951,17 @@ class XBELoader(BinaryView):
 
         NumberOfLibraries = image_header.value["NumberOfLibraries"]
 
-        xbe_library_version_type_id = Type.generate_auto_type_id("xbe", xbe_library_version_type_name)
-        self.define_type(xbe_library_version_type_id, xbe_library_version_type_name, xbe_library_version)
-        xbe_library_version_list = Type.array(self.types[xbe_library_version_type_name], NumberOfLibraries)
+        xbe_library_version_type_id = Type.generate_auto_type_id(
+            "xbe", xbe_library_version_type_name
+        )
+        self.define_type(
+            xbe_library_version_type_id,
+            xbe_library_version_type_name,
+            xbe_library_version,
+        )
+        xbe_library_version_list = Type.array(
+            self.types[xbe_library_version_type_name], NumberOfLibraries
+        )
 
         PointerToLibraries = image_header.value["PointerToLibraries"]
         self.define_data_var(
@@ -958,9 +991,13 @@ class XBELoader(BinaryView):
             xbe_tls_sz,
             SegmentFlag.SegmentReadable,
         )
-        
-        image_tls_dir_type_id = Type.generate_auto_type_id("xbe", image_tls_dir_type_name)
-        self.define_type(image_tls_dir_type_id, image_tls_dir_type_name, image_tls_directory)
+
+        image_tls_dir_type_id = Type.generate_auto_type_id(
+            "xbe", image_tls_dir_type_name
+        )
+        self.define_type(
+            image_tls_dir_type_id, image_tls_dir_type_name, image_tls_directory
+        )
         self.define_data_var(
             PointerToTlsDirectory,
             self.types[image_tls_dir_type_name],
