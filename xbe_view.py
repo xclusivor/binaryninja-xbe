@@ -56,7 +56,8 @@ class XBELoader(BinaryView):
         return True
 
     def on_complete(self):
-        self.define_xbe_symbols()
+        # Would prefer to call this prior to analysis for visibility reasons
+        # but pointer sweep will wreck the IAT for some reason, especially if in code section
         self.process_imports(self.kernel_thunk_table_addr)
 
     def process_imports(self, address):
@@ -448,18 +449,27 @@ class XBELoader(BinaryView):
             "MmDbgWriteCheck",                      # 378
         ]
 
-        extern_addrs = list()
-        import_names_and_Addrs = dict()
+        import_names_and_addrs = dict()
         while True:
+
             data = self.get_data_var_at(address)
             if data is None:
                 break
 
-            import_addr = ctypes.c_uint32(data.value).value
-            extern_addrs.append(import_addr)
-            import_name = kernel_exports[import_addr & ~0x80000000]
+            # In some cases data vars will get created by binja that have no
+            # real data associated with them. We run into problems if we try to get
+            # data that doesn't exist. Here we create a 4-byte var that will actually 
+            # have a value so we can overwrite it later. 
+            # This overall feels wrong and I'm positive there's a better way to do this
+            if data.type == Type.void():
+                self.define_data_var(address, Type.int(0x4, False))
+                data = self.get_data_var_at(address)
 
-            # Create data ref symbols in proper section
+            import_addr = ctypes.c_uint32(data.value).value
+            import_name = kernel_exports[import_addr & ~0x80000000]
+            import_names_and_addrs[import_addr] = import_name
+
+            # Create ImportAddressSymbols that have external references
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
                     SymbolType.ImportAddressSymbol,
@@ -471,26 +481,28 @@ class XBELoader(BinaryView):
                 Type.int(0x4, False),
             )
 
-            import_names_and_Addrs[import_addr] = import_name
-
             address += 0x4
 
-        extern_addrs.sort()
+        sorted_imports = dict(sorted(import_names_and_addrs.items()))
+        first_import_addr = list(sorted_imports.keys())[0]
+        last_import_addr = list(sorted_imports.keys())[-1]
 
         # Map external segment
         self.add_auto_segment(
-            extern_addrs[0] - 1, extern_addrs[-1] - extern_addrs[0] + 1, 0, 0, 0
+            first_import_addr, last_import_addr  - first_import_addr, 0, 0, 0
         )
 
         self.add_auto_section(
             ".extern",
-            extern_addrs[0] - 1,
-            extern_addrs[-1] - extern_addrs[0] + 1,
+            first_import_addr,
+            last_import_addr - first_import_addr,
             SectionSemantics.ExternalSectionSemantics,
         )
 
         # Create external function symbols
-        for import_addr, import_name in import_names_and_Addrs.items():
+        for import_addr, import_name in import_names_and_addrs.items():
+
+            # Currently, creating an ExternalSymbol in a non-PE context does not render the symbol
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
                     SymbolType.ExternalSymbol,
@@ -601,7 +613,7 @@ class XBELoader(BinaryView):
 
                 # If a symbol is detected in an invalid segment it is likely a false-positive
                 if self.get_segment_at(address) is None:
-                    pass
+                    continue
 
                 self.log(
                     f'Found "{demangled_symbol}" at {hex(address)}. Creating label...'
@@ -637,7 +649,6 @@ class XBELoader(BinaryView):
         self.arch = Architecture["x86"]
         self.platform = self.arch.standalone_platform
 
-        # After Binja has completed its analysis we do our own
         self.add_analysis_completion_event(self.on_complete)
 
         xbe_image_header_type_name = "XBE_IMAGE_HEADER"
@@ -1004,5 +1015,7 @@ class XBELoader(BinaryView):
             self.types[image_tls_dir_type_name],
             image_tls_dir_type_name,
         )
+
+        self.define_xbe_symbols()
 
         return True
