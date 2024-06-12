@@ -10,6 +10,8 @@ from binaryninja import (
     Symbol,
     SymbolType,
     SymbolBinding,
+    EnumerationBuilder,
+    BinaryReader,
 )
 
 from binaryninja.log import log_error, log_info
@@ -60,7 +62,7 @@ class XBELoader(BinaryView):
         # but pointer sweep will wreck the IAT for some reason, especially if in code section
         self.process_imports(self.kernel_thunk_table_addr)
 
-    def process_imports(self, address):
+    def process_imports(self, kernel_thunk_table_addr):
         """
         Get external functional symbols via the unscrambled value of PointerToKernelThunkTable in the XBE header.
 
@@ -450,22 +452,20 @@ class XBELoader(BinaryView):
         ]
 
         import_names_and_addrs = dict()
-        while True:
 
-            data = self.get_data_var_at(address)
-            if data is None:
+        # Get the raw offset of the segment that has the IAT
+        segment = self.get_segment_at(kernel_thunk_table_addr)
+        raw_seg_addr = segment.data_offset
+
+        reader = BinaryReader(self.raw, Endianness.LittleEndian)
+        reader.seek(raw_seg_addr)
+        while True:
+            import_addr = reader.read32()
+
+            # Import table is terminated with a zero dword
+            if import_addr == 0:
                 break
 
-            # In some cases data vars will get created by binja that have no
-            # real data associated with them. We run into problems if we try to get
-            # data that doesn't exist. Here we create a 4-byte var that will actually 
-            # have a value so we can overwrite it later. 
-            # This overall feels wrong and I'm positive there's a better way to do this
-            if data.type == Type.void():
-                self.define_data_var(address, Type.int(0x4, False))
-                data = self.get_data_var_at(address)
-
-            import_addr = ctypes.c_uint32(data.value).value
             import_name = kernel_exports[import_addr & ~0x80000000]
             import_names_and_addrs[import_addr] = import_name
 
@@ -473,15 +473,15 @@ class XBELoader(BinaryView):
             self.define_auto_symbol_and_var_or_function(
                 Symbol(
                     SymbolType.ImportAddressSymbol,
-                    address,
+                    kernel_thunk_table_addr,
                     import_name,
                     namespace="xboxkrnl.exe",
                     binding=SymbolBinding.NoBinding,
                 ),
-                Type.int(0x4, False),
+                Type.void(),
             )
-
-            address += 0x4
+            
+            kernel_thunk_table_addr += 0x4
 
         sorted_imports = dict(sorted(import_names_and_addrs.items()))
         first_import_addr = list(sorted_imports.keys())[0]
@@ -489,12 +489,12 @@ class XBELoader(BinaryView):
 
         # Map external segment
         self.add_auto_segment(
-            first_import_addr, last_import_addr  - first_import_addr, 0, 0, 0
+            first_import_addr - 1, last_import_addr  - first_import_addr, 0, 0, 0
         )
 
         self.add_auto_section(
             ".extern",
-            first_import_addr,
+            first_import_addr - 1,
             last_import_addr - first_import_addr,
             SectionSemantics.ExternalSectionSemantics,
         )
@@ -510,7 +510,7 @@ class XBELoader(BinaryView):
                     import_name,
                     binding=SymbolBinding.NoBinding,
                 ),
-                Type.int(0x4, False),
+                Type.void(),
             )
             self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
 
@@ -649,7 +649,22 @@ class XBELoader(BinaryView):
         self.arch = Architecture["x86"]
         self.platform = self.arch.standalone_platform
 
-        self.add_analysis_completion_event(self.on_complete)
+        # self.add_analysis_completion_event(self.on_complete)
+        
+        xbe_init_flags_name = "xbe_init_flags"
+        with EnumerationBuilder.builder(
+            self.raw, xbe_init_flags_name
+        ) as xbe_init_flags:
+            xbe_init_flags.append("FLAG_MOUNT_UTILITY_DRIVE", 0x00000001),
+            xbe_init_flags.append("FLAG_FORMAT_UTILITY_DRIVE", 0x00000002),
+            xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000003),
+            xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000004),
+            
+        xbe_init_flags_enum_id = Type.generate_auto_type_id(
+            "xbe", xbe_init_flags_name
+        )
+        xbe_init_flags_enum = Type.enumeration_type(self.arch, xbe_init_flags, 0x4)
+        self.define_type(xbe_init_flags_enum_id, xbe_init_flags_name, xbe_init_flags_enum)
 
         xbe_image_header_type_name = "XBE_IMAGE_HEADER"
         with StructureBuilder.builder(
@@ -672,7 +687,7 @@ class XBELoader(BinaryView):
             xbe_image_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)), "PointerToSectionTable"
             )
-            xbe_image_header.append(Type.int(0x4, False), "InitFlags")
+            xbe_image_header.append(xbe_init_flags_enum, "InitFlags")
             xbe_image_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)), "AddressOfEntryPoint"
             )
@@ -779,6 +794,45 @@ class XBELoader(BinaryView):
 
         image_header = self.get_data_var_at(ImageBase)
         certificate_address = image_header.value["CertificateHeader"]
+        
+        xbe_allowed_media_flags_name = "xbe_allowed_media_flags"
+        with EnumerationBuilder.builder(
+            self.raw, xbe_allowed_media_flags_name
+        ) as xbe_allowed_media_flags:
+            xbe_allowed_media_flags.append("HARD_DISK", 0x00000001),
+            xbe_allowed_media_flags.append("DVD_X2", 0x00000002),
+            xbe_allowed_media_flags.append("DVD_CD ", 0x00000004),
+            xbe_allowed_media_flags.append("CD ", 0x00000008),
+            xbe_allowed_media_flags.append("DVD_5_RO", 0x00000010),
+            xbe_allowed_media_flags.append("DVD_9_RO", 0x00000020),
+            xbe_allowed_media_flags.append("DVD_5_RW", 0x00000040),
+            xbe_allowed_media_flags.append("DVD_9_RW", 0x00000080),
+            xbe_allowed_media_flags.append("DONGLE", 0x00000100),
+            xbe_allowed_media_flags.append("MEDIA_BOARD", 0x00000200),
+            xbe_allowed_media_flags.append("NONSECURE_HARD_DISK", 0x40000000),
+            xbe_allowed_media_flags.append("NONSECURE_MODE", 0x80000000),
+            xbe_allowed_media_flags.append("MEDIA_MASK", 0x00FFFFFF),
+            
+        xbe_allowed_media_flags_enum_id = Type.generate_auto_type_id(
+            "xbe", xbe_allowed_media_flags_name
+        )
+        xbe_allowed_media_flags_enum = Type.enumeration_type(self.arch, xbe_allowed_media_flags, 0x4)
+        self.define_type(xbe_allowed_media_flags_enum_id, xbe_allowed_media_flags_name, xbe_allowed_media_flags_enum)
+
+        xbe_game_region_flags_name = "xbe_game_region_flags"  
+        with EnumerationBuilder.builder(
+            self.raw, xbe_game_region_flags_name
+        ) as xbe_game_region_flags:
+            xbe_game_region_flags.append("FLAG_GAME_REGION_NA", 0x00000001),
+            xbe_game_region_flags.append("FLAG_GAME_REGION_JAPAN", 0x00000002),
+            xbe_game_region_flags.append("FLAG_GAME_REGION_RESTOFWORLD", 0x00000004),
+            xbe_game_region_flags.append("FLAG_GAME_REGION_MANUFACTURING", 0x80000000),
+        
+        xbe_game_region_flags_enum_id = Type.generate_auto_type_id(
+            "xbe", xbe_game_region_flags_name
+        )
+        xbe_game_region_flags_enum = Type.enumeration_type(self.arch, xbe_game_region_flags, 0x4)
+        self.define_type(xbe_game_region_flags_enum_id, xbe_game_region_flags_name, xbe_game_region_flags_enum)
 
         xbe_certificate_header_type_name = "XBE_CERTIFICATE_HEADER"
         with StructureBuilder.builder(
@@ -794,7 +848,7 @@ class XBELoader(BinaryView):
             xbe_certificate_header.append(
                 Type.array(Type.char(), 0x40), "AlternativeTitleIDs"
             )
-            xbe_certificate_header.append(Type.int(0x4, False), "AllowedMedia")
+            xbe_certificate_header.append(xbe_allowed_media_flags_enum, "AllowedMedia")
             xbe_certificate_header.append(Type.int(0x4, False), "GameRegion")
             xbe_certificate_header.append(Type.int(0x4, False), "GameRatings")
             xbe_certificate_header.append(Type.int(0x4, False), "DiskNumber")
@@ -839,12 +893,29 @@ class XBELoader(BinaryView):
             xbe_certificate_header_type_name,
         )
 
+        xbe_section_flags_name = "xbe_section_flags"
+        with EnumerationBuilder.builder(
+            self.raw, xbe_section_flags_name
+        ) as xbe_section_flags:
+            xbe_section_flags.append("FLAG_WRITABLE", 0x00000001),
+            xbe_section_flags.append("FLAG_PRELOAD", 0x00000002),
+            xbe_section_flags.append("FLAG_EXECUTABLE", 0x00000004),
+            xbe_section_flags.append("FLAG_INSERTED_FILE", 0x00000008),
+            xbe_section_flags.append("FLAG_HEAD_PAGE_READ_ONLY", 0x00000010),
+            xbe_section_flags.append("FLAG_TAIL_PAGE_READ_ONLY", 0x00000020),
+            
+        xbe_section_flags_enum_id = Type.generate_auto_type_id(
+            "xbe", xbe_section_flags_name
+        )
+        xbe_section_flags_enum = Type.enumeration_type(self.arch, xbe_section_flags, 0x4)
+        self.define_type(xbe_section_flags_enum_id, xbe_section_flags_name, xbe_section_flags_enum)
+
         xbe_section_header_type_name = "XBE_SECTION_HEADER"
         with StructureBuilder.builder(
             self.raw, xbe_section_header_type_name
         ) as xbe_section_header:
             xbe_section_header.packed = True
-            xbe_section_header.append(Type.int(0x4, False), "Flags")
+            xbe_section_header.append(xbe_section_flags_enum, "Flags")
             xbe_section_header.append(
                 Type.pointer(self.arch, Type.int(0x4, False)), "VirtualAddress"
             )
@@ -870,11 +941,11 @@ class XBELoader(BinaryView):
         NumberOfSections = image_header.value["NumberOfSections"]
         PointerToSectionTable = image_header.value["PointerToSectionTable"]
 
-        be_section_header_type_id = Type.generate_auto_type_id(
+        xbe_section_header_type_id = Type.generate_auto_type_id(
             "xbe", xbe_section_header_type_name
         )
         self.define_type(
-            be_section_header_type_id, xbe_section_header_type_name, xbe_section_header
+            xbe_section_header_type_id, xbe_section_header_type_name, xbe_section_header
         )
         xbe_section_header_list = Type.array(
             self.types[xbe_section_header_type_name], NumberOfSections
@@ -949,6 +1020,9 @@ class XBELoader(BinaryView):
                 VirtualSize,
                 section_semantics,
             )
+
+        # Now that segments are created, process imports
+        self.process_imports(self.kernel_thunk_table_addr)
 
         xbe_library_version_type_name = "XBE_LIBRARY_VERSION"
         with StructureBuilder.builder(
