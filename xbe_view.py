@@ -544,7 +544,7 @@ class XBELoader(BinaryView):
         elif os_plat == "Linux":
             analyzer_tool_filepath = os.path.join("linux_x64/bin/", analyzer_tool_name)
         elif os_plat == "Darwin":
-            analyzer_tool_filepath = os.path.join("macos_x64/bin/", analyzer_tool_name)
+            analyzer_tool_filepath = os.path.join("macos_arm64/bin/", analyzer_tool_name)
 
         # Get version string to check for an update
         try:
