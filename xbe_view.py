@@ -12,6 +12,7 @@ from binaryninja import (
     SymbolBinding,
     EnumerationBuilder,
     BinaryReader,
+    QualifiedName,
 )
 
 from binaryninja.log import log_error, log_info
@@ -737,6 +738,13 @@ class XBELoader(BinaryView):
 
             self.raw.define_data_var(0x0, xbe_image_header, xbe_image_header_type_name)
 
+            # Create XBE_IMAGE_HEADER platform type
+            xbe_image_header_type = Type.structure_type(xbe_image_header)
+            xbe_image_header_qname = QualifiedName("XBE_IMAGE_HEADER")
+            xbe_image_header_type_id = Type.generate_auto_type_id("XBE", xbe_image_header_qname)
+            self.define_type(xbe_image_header_type_id, xbe_image_header_qname, xbe_image_header_type)
+
+
         image_header_raw = self.raw.get_data_var_at(0x0)
         ImageBase = image_header_raw.value["ImageBase"]
         SizeOfHeaders = image_header_raw.value["SizeOfHeaders"]
@@ -865,6 +873,13 @@ class XBELoader(BinaryView):
                 xbe_certificate_header_type_name,
             )
 
+            # Create XBE_CERTIFICATE_HEADER platform type
+            xbe_certificate_header_type = Type.structure_type(xbe_certificate_header)
+            xbe_certificate_header_qname = QualifiedName("XBE_CERTIFICATE_HEADER")
+            xbe_certificate_header_type_id = Type.generate_auto_type_id("XBE", xbe_certificate_header_qname)
+            self.define_type(xbe_certificate_header_type_id, xbe_certificate_header_qname, xbe_certificate_header_type)
+
+
         certificate_struct_raw = self.get_data_var_at(certificate_address)
         SizeOfHeader = certificate_struct_raw.value["SizeOfHeader"]
         if SizeOfHeader >= 0x1D4:
@@ -937,6 +952,13 @@ class XBELoader(BinaryView):
                 "TailReferenceCount",
             )
             xbe_section_header.append(Type.array(Type.char(), 0x14), "SectionDigest")
+
+            # Create XBE_SECTION_HEADER platform type
+            xbe_section_header_type = Type.structure_type(xbe_section_header)
+            xbe_section_header_qname = QualifiedName("XBE_SECTION_HEADER")
+            xbe_section_header_type_id = Type.generate_auto_type_id("XBE", xbe_section_header_qname)
+            self.define_type(xbe_section_header_type_id, xbe_section_header_qname, xbe_section_header_type)
+
 
         NumberOfSections = image_header.value["NumberOfSections"]
         PointerToSectionTable = image_header.value["PointerToSectionTable"]
@@ -1035,6 +1057,12 @@ class XBELoader(BinaryView):
             xbe_library_version.append(Type.int(0x2, False), "BuildVersion")
             xbe_library_version.append(Type.int(0x2, False), "LibraryFlags")
 
+            # Create XBE_LIBRARY_VERSION platform type
+            xbe_library_version_type = Type.structure_type(xbe_library_version)
+            xbe_library_version_qname = QualifiedName("XBE_LIBRARY_VERSION")
+            xbe_library_version_type_id = Type.generate_auto_type_id("XBE", xbe_library_version_qname)
+            self.define_type(xbe_library_version_type_id, xbe_library_version_qname, xbe_library_version_type)
+
         NumberOfLibraries = image_header.value["NumberOfLibraries"]
 
         xbe_library_version_type_id = Type.generate_auto_type_id(
@@ -1067,6 +1095,13 @@ class XBELoader(BinaryView):
             image_tls_directory.append(Type.int(0x4, False), "AddressOfCallbacks")
             image_tls_directory.append(Type.int(0x4, False), "SizeOfZeroFill")
             image_tls_directory.append(Type.int(0x4, False), "Characteristics")
+
+            # Create IMAGE_TLS_DIRECTORY_32 platform type
+            image_tls_directory_type = Type.structure_type(image_tls_directory)
+            image_tls_directory_qname = QualifiedName("IMAGE_TLS_DIRECTORY_32")
+            image_tls_directory_type_id = Type.generate_auto_type_id("XBE", image_tls_directory_qname)
+            self.define_type(image_tls_directory_type_id, image_tls_directory_qname, image_tls_directory_type)
+
 
         xbe_tls_sz = len(image_tls_directory)
         PointerToTlsDirectory = image_header.value["PointerToTlsDirectory"]
