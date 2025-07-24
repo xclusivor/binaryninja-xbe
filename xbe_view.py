@@ -12,7 +12,6 @@ from binaryninja import (
     SymbolBinding,
     EnumerationBuilder,
     BinaryReader,
-    QualifiedName,
 )
 
 from binaryninja.log import log_error, log_info
@@ -24,7 +23,7 @@ import subprocess
 import platform
 import pathlib
 import stat
-import ctypes
+import re
 
 
 class XBELoader(BinaryView):
@@ -33,6 +32,10 @@ class XBELoader(BinaryView):
     magic = b"XBEH"
 
     kernel_thunk_table_addr = 0
+
+    # Save these two for variable name recovery later
+    analyzer_tool_filepath = str()
+    recovered_symbol_list = list()
 
     def log(self, msg, error=False):
         msg = f"[XBE Loader] {msg}"
@@ -58,10 +61,41 @@ class XBELoader(BinaryView):
     def perform_is_executable(self):
         return True
 
-    def on_complete(self):
-        # Would prefer to call this prior to analysis for visibility reasons
-        # but pointer sweep will wreck the IAT for some reason, especially if in code section
-        self.process_imports(self.kernel_thunk_table_addr)
+    def recover_varible_names(self):
+        for line in self.recovered_symbol_list:
+
+            # Speparate address from the rest of symbol
+            symbol_and_address = line.split(b"=")
+
+            # Get params inside parantheses
+            pattern = r"\(([^)]*)\)"
+            matches = re.findall(pattern, str(symbol_and_address[0]))
+            if not matches:
+                continue
+
+            # Put variable and type into list
+            params_list = matches[0].split(",")
+
+            address = int(symbol_and_address[1].decode(), 16)
+
+            # Make list of variable names
+            variable_names = list()
+            for param in params_list:
+                variable_names.append(param.split(" ")[-1])
+
+            func_obj = self.get_function_at(address)
+
+            # Apply recovered varible names to functions
+            try:
+                for (defualt_var_name, recovered_var_name) in zip(func_obj.parameter_vars.vars, variable_names):
+
+                    # Analyzer uses "Value" as a placeholder, but argX is more readable
+                    if recovered_var_name in "Value":
+                        continue
+                    defualt_var_name.name = recovered_var_name
+            except AttributeError:
+                continue
+
 
     def process_imports(self, kernel_thunk_table_addr):
         """
@@ -479,7 +513,7 @@ class XBELoader(BinaryView):
                     namespace="xboxkrnl.exe",
                     binding=SymbolBinding.NoBinding,
                 ),
-                Type.void(),
+                Type.function(Type.int(0x4, False))
             )
             
             kernel_thunk_table_addr += 0x4
@@ -493,25 +527,26 @@ class XBELoader(BinaryView):
             first_import_addr - 1, last_import_addr  - first_import_addr, 0, 0, 0
         )
 
-        self.add_auto_section(
-            ".extern",
-            first_import_addr - 1,
-            last_import_addr - first_import_addr,
-            SectionSemantics.ExternalSectionSemantics,
-        )
+        # self.add_auto_section(
+        #     ".extern",
+        #     first_import_addr - 1,
+        #     last_import_addr - first_import_addr,
+        #     SectionSemantics.ExternalSectionSemantics,
+        # )
 
         # Create external function symbols
         for import_addr, import_name in import_names_and_addrs.items():
 
             # Currently, creating an ExternalSymbol in a non-PE context does not render the symbol
-            self.define_auto_symbol_and_var_or_function(
+            # self.define_auto_symbol_and_var_or_function(
+            self.define_auto_symbol(
                 Symbol(
                     SymbolType.ExternalSymbol,
-                    import_addr,
+                    0,
                     import_name,
                     binding=SymbolBinding.NoBinding,
                 ),
-                Type.void(),
+                # Type.int(0x4, False),
             )
             self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
 
@@ -588,27 +623,39 @@ class XBELoader(BinaryView):
                 "Unable to reach XbSymbolDatabase GitHub release: " + str(e), error=True
             )
 
-        analyzer_tool_filepath = os.path.join(extract_path, analyzer_tool_filepath)
-        if os.path.exists(analyzer_tool_filepath):
+        self.analyzer_tool_filepath = os.path.join(extract_path, analyzer_tool_filepath)
+        if os.path.exists(self.analyzer_tool_filepath):
             # Get current binary filepath
             xbe_filepath = self.file.original_filename
 
             # Make symbol analyzer executable
-            st = os.stat(analyzer_tool_filepath)
-            os.chmod(analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
+            st = os.stat(self.analyzer_tool_filepath)
+            os.chmod(self.analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
 
             self.log("Running XbSymbolDatabase analyzer.")
+
+            # -e give us extended info like variable names
             output = subprocess.run(
-                [analyzer_tool_filepath, xbe_filepath], capture_output=True
+                [self.analyzer_tool_filepath, xbe_filepath, "-e"], capture_output=True
             )
 
             # Parse analyzer output
-            # Format is: function_name = function_address
+            # Format is: <NAMESPACE>__<FUNC/VAR>__<calling_convention>_<function_name>(<params>) = <function_address>
             output_split = output.stdout.splitlines()
             for line in output_split:
+
+                # Add symbol to global list
+                self.recovered_symbol_list.append(line)
+
+                # Speparate address from the rest of symbol
                 symbol_and_address = line.split(b"=")
-                mangled_symbol = symbol_and_address[0].strip().decode()
+
+                # Separate symbol and params
+                symbol_and_params = symbol_and_address[0].split(b"(")
+
+                mangled_symbol = symbol_and_params[0].strip().decode()
                 demangled_namespace, demangled_symbol = mangled_symbol.split("__", 1)
+                demangled_symbol = demangled_symbol.split("__")[-1]
 
                 address = int(symbol_and_address[1].decode(), 16)
 
@@ -620,14 +667,12 @@ class XBELoader(BinaryView):
                     f'Found "{demangled_symbol}" at {hex(address)}. Creating label...'
                 )
 
+                # Assume function symbol
                 symbol_type = SymbolType.FunctionSymbol
 
-                # Code sections can contain data and some data symbols may erroneously
-                # get marked as code symbols. This is a dumb way to mark data vars.
-                if "g_" in demangled_symbol:
+                # Analyzer prepends "VAR" or "FUN" to symbol where appropriate
+                if "VAR" in demangled_symbol:
                     symbol_type = SymbolType.DataSymbol
-
-                #TODO: Try to differentiate between code and data symbols from database
 
                 self.define_auto_symbol(
                     Symbol(
@@ -635,7 +680,7 @@ class XBELoader(BinaryView):
                         address,
                         demangled_symbol,
                         namespace=demangled_namespace,
-                    )
+                    ),
                 )
 
             self.log("Done adding symbols from XbSymbolDatabase")
@@ -650,23 +695,24 @@ class XBELoader(BinaryView):
         self.arch = Architecture["x86"]
         self.platform = self.arch.standalone_platform
 
-        # self.add_analysis_completion_event(self.on_complete)
-        
+        # Describe xbe_init_flags enum
         xbe_init_flags_name = "xbe_init_flags"
         with EnumerationBuilder.builder(
             self.raw, xbe_init_flags_name
         ) as xbe_init_flags:
             xbe_init_flags.append("FLAG_MOUNT_UTILITY_DRIVE", 0x00000001),
             xbe_init_flags.append("FLAG_FORMAT_UTILITY_DRIVE", 0x00000002),
-            xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000003),
-            xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000004),
+            xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000004),
+            xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000008),
             
+        # Create xbe_init_flags platform type
         xbe_init_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_init_flags_name
         )
         xbe_init_flags_enum = Type.enumeration_type(self.arch, xbe_init_flags, 0x4)
         self.define_type(xbe_init_flags_enum_id, xbe_init_flags_name, xbe_init_flags_enum)
 
+        # Describe XBE_IMAGE_HEADER struct
         xbe_image_header_type_name = "XBE_IMAGE_HEADER"
         with StructureBuilder.builder(
             self.raw, xbe_image_header_type_name
@@ -738,13 +784,6 @@ class XBELoader(BinaryView):
 
             self.raw.define_data_var(0x0, xbe_image_header, xbe_image_header_type_name)
 
-            # Create XBE_IMAGE_HEADER platform type
-            xbe_image_header_type = Type.structure_type(xbe_image_header)
-            xbe_image_header_qname = QualifiedName("XBE_IMAGE_HEADER")
-            xbe_image_header_type_id = Type.generate_auto_type_id("XBE", xbe_image_header_qname)
-            self.define_type(xbe_image_header_type_id, xbe_image_header_qname, xbe_image_header_type)
-
-
         image_header_raw = self.raw.get_data_var_at(0x0)
         ImageBase = image_header_raw.value["ImageBase"]
         SizeOfHeaders = image_header_raw.value["SizeOfHeaders"]
@@ -788,12 +827,14 @@ class XBELoader(BinaryView):
         if SizeOfImageHeader >= 0x184:
             xbe_image_header.append(Type.int(0x4, False), "DebugInfo")
 
+        # Create XBE_IMAGE_HEADER platform type
         xbe_image_header_type_id = Type.generate_auto_type_id(
             "xbe", xbe_image_header_type_name
         )
         self.define_type(
             xbe_image_header_type_id, xbe_image_header_type_name, xbe_image_header
         )
+
         self.define_data_var(
             ImageBase,
             self.types[xbe_image_header_type_name],
@@ -803,14 +844,15 @@ class XBELoader(BinaryView):
         image_header = self.get_data_var_at(ImageBase)
         certificate_address = image_header.value["CertificateHeader"]
         
+        # Describe xbe_allowed_media_flags enum
         xbe_allowed_media_flags_name = "xbe_allowed_media_flags"
         with EnumerationBuilder.builder(
             self.raw, xbe_allowed_media_flags_name
         ) as xbe_allowed_media_flags:
             xbe_allowed_media_flags.append("HARD_DISK", 0x00000001),
             xbe_allowed_media_flags.append("DVD_X2", 0x00000002),
-            xbe_allowed_media_flags.append("DVD_CD ", 0x00000004),
-            xbe_allowed_media_flags.append("CD ", 0x00000008),
+            xbe_allowed_media_flags.append("DVD_CD", 0x00000004),
+            xbe_allowed_media_flags.append("CD", 0x00000008),
             xbe_allowed_media_flags.append("DVD_5_RO", 0x00000010),
             xbe_allowed_media_flags.append("DVD_9_RO", 0x00000020),
             xbe_allowed_media_flags.append("DVD_5_RW", 0x00000040),
@@ -821,12 +863,14 @@ class XBELoader(BinaryView):
             xbe_allowed_media_flags.append("NONSECURE_MODE", 0x80000000),
             xbe_allowed_media_flags.append("MEDIA_MASK", 0x00FFFFFF),
             
+        # Create xbe_allowed_media_flags platform type
         xbe_allowed_media_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_allowed_media_flags_name
         )
         xbe_allowed_media_flags_enum = Type.enumeration_type(self.arch, xbe_allowed_media_flags, 0x4)
         self.define_type(xbe_allowed_media_flags_enum_id, xbe_allowed_media_flags_name, xbe_allowed_media_flags_enum)
 
+        # Describe xbe_game_region_flags enum
         xbe_game_region_flags_name = "xbe_game_region_flags"  
         with EnumerationBuilder.builder(
             self.raw, xbe_game_region_flags_name
@@ -836,12 +880,14 @@ class XBELoader(BinaryView):
             xbe_game_region_flags.append("FLAG_GAME_REGION_RESTOFWORLD", 0x00000004),
             xbe_game_region_flags.append("FLAG_GAME_REGION_MANUFACTURING", 0x80000000),
         
+        # Create xbe_game_region_flags platform type
         xbe_game_region_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_game_region_flags_name
         )
         xbe_game_region_flags_enum = Type.enumeration_type(self.arch, xbe_game_region_flags, 0x4)
         self.define_type(xbe_game_region_flags_enum_id, xbe_game_region_flags_name, xbe_game_region_flags_enum)
 
+        # Describe XBE_CERTIFICATE_HEADER struct
         xbe_certificate_header_type_name = "XBE_CERTIFICATE_HEADER"
         with StructureBuilder.builder(
             self.raw, xbe_certificate_header_type_name
@@ -857,7 +903,7 @@ class XBELoader(BinaryView):
                 Type.array(Type.char(), 0x40), "AlternativeTitleIDs"
             )
             xbe_certificate_header.append(xbe_allowed_media_flags_enum, "AllowedMedia")
-            xbe_certificate_header.append(Type.int(0x4, False), "GameRegion")
+            xbe_certificate_header.append(xbe_game_region_flags_enum, "GameRegion")
             xbe_certificate_header.append(Type.int(0x4, False), "GameRatings")
             xbe_certificate_header.append(Type.int(0x4, False), "DiskNumber")
             xbe_certificate_header.append(Type.int(0x4, False), "Version")
@@ -873,13 +919,6 @@ class XBELoader(BinaryView):
                 xbe_certificate_header_type_name,
             )
 
-            # Create XBE_CERTIFICATE_HEADER platform type
-            xbe_certificate_header_type = Type.structure_type(xbe_certificate_header)
-            xbe_certificate_header_qname = QualifiedName("XBE_CERTIFICATE_HEADER")
-            xbe_certificate_header_type_id = Type.generate_auto_type_id("XBE", xbe_certificate_header_qname)
-            self.define_type(xbe_certificate_header_type_id, xbe_certificate_header_qname, xbe_certificate_header_type)
-
-
         certificate_struct_raw = self.get_data_var_at(certificate_address)
         SizeOfHeader = certificate_struct_raw.value["SizeOfHeader"]
         if SizeOfHeader >= 0x1D4:
@@ -894,6 +933,8 @@ class XBELoader(BinaryView):
             xbe_certificate_header.append(
                 Type.array(Type.char(), 0x10), "CodeEncryptionKey"
             )
+
+        # Create XBE_CERTIFICATE_HEADER platform type
         xbe_certificate_header_type_id = Type.generate_auto_type_id(
             "xbe", xbe_certificate_header_type_name
         )
@@ -902,12 +943,14 @@ class XBELoader(BinaryView):
             xbe_certificate_header_type_name,
             xbe_certificate_header,
         )
+
         self.define_data_var(
             certificate_address,
             self.types[xbe_certificate_header_type_name],
             xbe_certificate_header_type_name,
         )
 
+        # Describe xbe_section_flags enum
         xbe_section_flags_name = "xbe_section_flags"
         with EnumerationBuilder.builder(
             self.raw, xbe_section_flags_name
@@ -919,12 +962,14 @@ class XBELoader(BinaryView):
             xbe_section_flags.append("FLAG_HEAD_PAGE_READ_ONLY", 0x00000010),
             xbe_section_flags.append("FLAG_TAIL_PAGE_READ_ONLY", 0x00000020),
             
+        # Create xbe_section_flags platform type
         xbe_section_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_section_flags_name
         )
         xbe_section_flags_enum = Type.enumeration_type(self.arch, xbe_section_flags, 0x4)
         self.define_type(xbe_section_flags_enum_id, xbe_section_flags_name, xbe_section_flags_enum)
 
+        # Describe XBE_SECTION_HEADER struct
         xbe_section_header_type_name = "XBE_SECTION_HEADER"
         with StructureBuilder.builder(
             self.raw, xbe_section_header_type_name
@@ -953,22 +998,17 @@ class XBELoader(BinaryView):
             )
             xbe_section_header.append(Type.array(Type.char(), 0x14), "SectionDigest")
 
-            # Create XBE_SECTION_HEADER platform type
-            xbe_section_header_type = Type.structure_type(xbe_section_header)
-            xbe_section_header_qname = QualifiedName("XBE_SECTION_HEADER")
-            xbe_section_header_type_id = Type.generate_auto_type_id("XBE", xbe_section_header_qname)
-            self.define_type(xbe_section_header_type_id, xbe_section_header_qname, xbe_section_header_type)
-
-
         NumberOfSections = image_header.value["NumberOfSections"]
         PointerToSectionTable = image_header.value["PointerToSectionTable"]
 
+        # Create XBE_SECTION_HEADER platform type
         xbe_section_header_type_id = Type.generate_auto_type_id(
             "xbe", xbe_section_header_type_name
         )
         self.define_type(
             xbe_section_header_type_id, xbe_section_header_type_name, xbe_section_header
         )
+
         xbe_section_header_list = Type.array(
             self.types[xbe_section_header_type_name], NumberOfSections
         )
@@ -996,7 +1036,8 @@ class XBELoader(BinaryView):
             RawAddress = section.value["RawAddress"]
             RawSize = section.value["RawSize"]
 
-            Flags = section.value["Flags"]
+            # Cast to int as value is sometimes a binja enum
+            Flags = int(section.value["Flags"])
 
             writable = 0
             executable = 0
@@ -1043,9 +1084,7 @@ class XBELoader(BinaryView):
                 section_semantics,
             )
 
-        # Now that segments are created, process imports
-        self.process_imports(self.kernel_thunk_table_addr)
-
+        # Describe XBE_LIBRARY_VERSION struct
         xbe_library_version_type_name = "XBE_LIBRARY_VERSION"
         with StructureBuilder.builder(
             self.raw, xbe_library_version_type_name
@@ -1057,14 +1096,9 @@ class XBELoader(BinaryView):
             xbe_library_version.append(Type.int(0x2, False), "BuildVersion")
             xbe_library_version.append(Type.int(0x2, False), "LibraryFlags")
 
-            # Create XBE_LIBRARY_VERSION platform type
-            xbe_library_version_type = Type.structure_type(xbe_library_version)
-            xbe_library_version_qname = QualifiedName("XBE_LIBRARY_VERSION")
-            xbe_library_version_type_id = Type.generate_auto_type_id("XBE", xbe_library_version_qname)
-            self.define_type(xbe_library_version_type_id, xbe_library_version_qname, xbe_library_version_type)
-
         NumberOfLibraries = image_header.value["NumberOfLibraries"]
 
+        # Create XBE_LIBRARY_VERSION platform type
         xbe_library_version_type_id = Type.generate_auto_type_id(
             "xbe", xbe_library_version_type_name
         )
@@ -1073,6 +1107,7 @@ class XBELoader(BinaryView):
             xbe_library_version_type_name,
             xbe_library_version,
         )
+
         xbe_library_version_list = Type.array(
             self.types[xbe_library_version_type_name], NumberOfLibraries
         )
@@ -1084,6 +1119,7 @@ class XBELoader(BinaryView):
             xbe_library_version_type_name,
         )
 
+        # Describe IMAGE_TLS_DIRECTORY_32 struct
         image_tls_dir_type_name = "IMAGE_TLS_DIRECTORY_32"
         with StructureBuilder.builder(
             self.raw, image_tls_dir_type_name
@@ -1096,13 +1132,6 @@ class XBELoader(BinaryView):
             image_tls_directory.append(Type.int(0x4, False), "SizeOfZeroFill")
             image_tls_directory.append(Type.int(0x4, False), "Characteristics")
 
-            # Create IMAGE_TLS_DIRECTORY_32 platform type
-            image_tls_directory_type = Type.structure_type(image_tls_directory)
-            image_tls_directory_qname = QualifiedName("IMAGE_TLS_DIRECTORY_32")
-            image_tls_directory_type_id = Type.generate_auto_type_id("XBE", image_tls_directory_qname)
-            self.define_type(image_tls_directory_type_id, image_tls_directory_qname, image_tls_directory_type)
-
-
         xbe_tls_sz = len(image_tls_directory)
         PointerToTlsDirectory = image_header.value["PointerToTlsDirectory"]
         self.add_auto_segment(
@@ -1113,12 +1142,14 @@ class XBELoader(BinaryView):
             SegmentFlag.SegmentReadable,
         )
 
+        # Create IMAGE_TLS_DIRECTORY_32 platform type
         image_tls_dir_type_id = Type.generate_auto_type_id(
             "xbe", image_tls_dir_type_name
         )
         self.define_type(
             image_tls_dir_type_id, image_tls_dir_type_name, image_tls_directory
         )
+
         self.define_data_var(
             PointerToTlsDirectory,
             self.types[image_tls_dir_type_name],
@@ -1126,5 +1157,7 @@ class XBELoader(BinaryView):
         )
 
         self.define_xbe_symbols()
+        self.process_imports(self.kernel_thunk_table_addr)
+        self.add_analysis_completion_event(self.recover_varible_names)
 
         return True
