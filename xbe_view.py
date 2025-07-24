@@ -62,6 +62,8 @@ class XBELoader(BinaryView):
         return True
 
     def recover_varible_names(self):
+
+        self.log("Recovring variable names...")
         for line in self.recovered_symbol_list:
 
             # Speparate address from the rest of symbol
@@ -97,6 +99,8 @@ class XBELoader(BinaryView):
                     defualt_var_name.name = recovered_var_name
             except AttributeError:
                 continue
+            
+        self.log("Done!")
 
     def process_imports(self, kernel_thunk_table_addr):
         """
