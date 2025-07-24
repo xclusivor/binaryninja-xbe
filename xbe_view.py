@@ -87,7 +87,9 @@ class XBELoader(BinaryView):
 
             # Apply recovered varible names to functions
             try:
-                for (defualt_var_name, recovered_var_name) in zip(func_obj.parameter_vars.vars, variable_names):
+                for defualt_var_name, recovered_var_name in zip(
+                    func_obj.parameter_vars.vars, variable_names
+                ):
 
                     # Analyzer uses "Value" as a placeholder, but argX is more readable
                     if recovered_var_name in "Value":
@@ -96,14 +98,13 @@ class XBELoader(BinaryView):
             except AttributeError:
                 continue
 
-
     def process_imports(self, kernel_thunk_table_addr):
         """
         Get external functional symbols via the unscrambled value of PointerToKernelThunkTable in the XBE header.
 
         Calculate the import addresses and their matching symbol, then define the external symbols.
         """
-
+        # fmt: off
         kernel_exports = [
             "",                                     # 0
             "AvGetSavedDataAddress",                # 1
@@ -485,6 +486,7 @@ class XBELoader(BinaryView):
             "MmDbgReleaseAddress",                  # 377
             "MmDbgWriteCheck",                      # 378
         ]
+        # fmt: on
 
         import_names_and_addrs = dict()
 
@@ -513,9 +515,9 @@ class XBELoader(BinaryView):
                     namespace="xboxkrnl.exe",
                     binding=SymbolBinding.NoBinding,
                 ),
-                Type.function(Type.int(0x4, False))
+                Type.function(Type.int(0x4, False)),
             )
-            
+
             kernel_thunk_table_addr += 0x4
 
         sorted_imports = dict(sorted(import_names_and_addrs.items()))
@@ -524,7 +526,7 @@ class XBELoader(BinaryView):
 
         # Map external segment
         self.add_auto_segment(
-            first_import_addr - 1, last_import_addr  - first_import_addr, 0, 0, 0
+            first_import_addr - 1, last_import_addr - first_import_addr, 0, 0, 0
         )
 
         # self.add_auto_section(
@@ -579,7 +581,9 @@ class XBELoader(BinaryView):
         elif os_plat == "Linux":
             analyzer_tool_filepath = os.path.join("linux_x64/bin/", analyzer_tool_name)
         elif os_plat == "Darwin":
-            analyzer_tool_filepath = os.path.join("macos_arm64/bin/", analyzer_tool_name)
+            analyzer_tool_filepath = os.path.join(
+                "macos_arm64/bin/", analyzer_tool_name
+            )
 
         # Get version string to check for an update
         try:
@@ -704,13 +708,13 @@ class XBELoader(BinaryView):
             xbe_init_flags.append("FLAG_FORMAT_UTILITY_DRIVE", 0x00000002),
             xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000004),
             xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000008),
-            
+
         # Create xbe_init_flags platform type
-        xbe_init_flags_enum_id = Type.generate_auto_type_id(
-            "xbe", xbe_init_flags_name
-        )
+        xbe_init_flags_enum_id = Type.generate_auto_type_id("xbe", xbe_init_flags_name)
         xbe_init_flags_enum = Type.enumeration_type(self.arch, xbe_init_flags, 0x4)
-        self.define_type(xbe_init_flags_enum_id, xbe_init_flags_name, xbe_init_flags_enum)
+        self.define_type(
+            xbe_init_flags_enum_id, xbe_init_flags_name, xbe_init_flags_enum
+        )
 
         # Describe XBE_IMAGE_HEADER struct
         xbe_image_header_type_name = "XBE_IMAGE_HEADER"
@@ -843,7 +847,7 @@ class XBELoader(BinaryView):
 
         image_header = self.get_data_var_at(ImageBase)
         certificate_address = image_header.value["CertificateHeader"]
-        
+
         # Describe xbe_allowed_media_flags enum
         xbe_allowed_media_flags_name = "xbe_allowed_media_flags"
         with EnumerationBuilder.builder(
@@ -862,16 +866,22 @@ class XBELoader(BinaryView):
             xbe_allowed_media_flags.append("NONSECURE_HARD_DISK", 0x40000000),
             xbe_allowed_media_flags.append("NONSECURE_MODE", 0x80000000),
             xbe_allowed_media_flags.append("MEDIA_MASK", 0x00FFFFFF),
-            
+
         # Create xbe_allowed_media_flags platform type
         xbe_allowed_media_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_allowed_media_flags_name
         )
-        xbe_allowed_media_flags_enum = Type.enumeration_type(self.arch, xbe_allowed_media_flags, 0x4)
-        self.define_type(xbe_allowed_media_flags_enum_id, xbe_allowed_media_flags_name, xbe_allowed_media_flags_enum)
+        xbe_allowed_media_flags_enum = Type.enumeration_type(
+            self.arch, xbe_allowed_media_flags, 0x4
+        )
+        self.define_type(
+            xbe_allowed_media_flags_enum_id,
+            xbe_allowed_media_flags_name,
+            xbe_allowed_media_flags_enum,
+        )
 
         # Describe xbe_game_region_flags enum
-        xbe_game_region_flags_name = "xbe_game_region_flags"  
+        xbe_game_region_flags_name = "xbe_game_region_flags"
         with EnumerationBuilder.builder(
             self.raw, xbe_game_region_flags_name
         ) as xbe_game_region_flags:
@@ -879,13 +889,19 @@ class XBELoader(BinaryView):
             xbe_game_region_flags.append("FLAG_GAME_REGION_JAPAN", 0x00000002),
             xbe_game_region_flags.append("FLAG_GAME_REGION_RESTOFWORLD", 0x00000004),
             xbe_game_region_flags.append("FLAG_GAME_REGION_MANUFACTURING", 0x80000000),
-        
+
         # Create xbe_game_region_flags platform type
         xbe_game_region_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_game_region_flags_name
         )
-        xbe_game_region_flags_enum = Type.enumeration_type(self.arch, xbe_game_region_flags, 0x4)
-        self.define_type(xbe_game_region_flags_enum_id, xbe_game_region_flags_name, xbe_game_region_flags_enum)
+        xbe_game_region_flags_enum = Type.enumeration_type(
+            self.arch, xbe_game_region_flags, 0x4
+        )
+        self.define_type(
+            xbe_game_region_flags_enum_id,
+            xbe_game_region_flags_name,
+            xbe_game_region_flags_enum,
+        )
 
         # Describe XBE_CERTIFICATE_HEADER struct
         xbe_certificate_header_type_name = "XBE_CERTIFICATE_HEADER"
@@ -961,13 +977,17 @@ class XBELoader(BinaryView):
             xbe_section_flags.append("FLAG_INSERTED_FILE", 0x00000008),
             xbe_section_flags.append("FLAG_HEAD_PAGE_READ_ONLY", 0x00000010),
             xbe_section_flags.append("FLAG_TAIL_PAGE_READ_ONLY", 0x00000020),
-            
+
         # Create xbe_section_flags platform type
         xbe_section_flags_enum_id = Type.generate_auto_type_id(
             "xbe", xbe_section_flags_name
         )
-        xbe_section_flags_enum = Type.enumeration_type(self.arch, xbe_section_flags, 0x4)
-        self.define_type(xbe_section_flags_enum_id, xbe_section_flags_name, xbe_section_flags_enum)
+        xbe_section_flags_enum = Type.enumeration_type(
+            self.arch, xbe_section_flags, 0x4
+        )
+        self.define_type(
+            xbe_section_flags_enum_id, xbe_section_flags_name, xbe_section_flags_enum
+        )
 
         # Describe XBE_SECTION_HEADER struct
         xbe_section_header_type_name = "XBE_SECTION_HEADER"
