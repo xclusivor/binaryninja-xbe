@@ -5,7 +5,6 @@ from binaryninja import (
     SegmentFlag,
     StructureBuilder,
     Type,
-    SegmentFlag,
     SectionSemantics,
     Symbol,
     SymbolType,
@@ -81,9 +80,7 @@ class XBELoader(BinaryView):
             address = int(symbol_and_address[1].decode(), 16)
 
             # Make list of variable names
-            variable_names = list()
-            for param in params_list:
-                variable_names.append(param.split(" ")[-1])
+            variable_names = [param.split(" ")[-1] for param in params_list]
 
             func_obj = self.get_function_at(address)
 
@@ -492,7 +489,7 @@ class XBELoader(BinaryView):
         ]
         # fmt: on
 
-        import_names_and_addrs = dict()
+        import_names_and_addrs = {}
 
         # Get the raw offset of the segment that has the IAT
         segment = self.get_segment_at(kernel_thunk_table_addr)
@@ -554,7 +551,7 @@ class XBELoader(BinaryView):
                 ),
                 # Type.int(0x4, False),
             )
-            self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
+            self.log(f'Setting up kernel export "{import_name}" at {import_addr:#x}')
 
         self.log("Done setting up kernel exports!")
 
@@ -604,7 +601,7 @@ class XBELoader(BinaryView):
             # Download and extract if symbol analyzer doesn't already exist
             # or if release versions differ, download the latest update
             if not os.path.exists(extract_path) or release_version != current_version:
-                self.log(f"Downloading XbSymbolDatabase analyzer")
+                self.log("Downloading XbSymbolDatabase analyzer")
                 try:
                     request_obj = requests.get(release_url, allow_redirects=True)
                 except requests.exceptions.RequestException as e:
@@ -644,7 +641,7 @@ class XBELoader(BinaryView):
 
             # -e give us extended info like variable names
             output = subprocess.run(
-                [self.analyzer_tool_filepath, xbe_filepath, "-e"], capture_output=True
+                [self.analyzer_tool_filepath, xbe_filepath, "-e"], capture_output=True, check=True
             )
 
             # Parse analyzer output
