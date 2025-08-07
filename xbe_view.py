@@ -2,10 +2,10 @@ from binaryninja import (
     Architecture,
     BinaryView,
     Endianness,
+    Logger,
     SegmentFlag,
     StructureBuilder,
     Type,
-    SegmentFlag,
     SectionSemantics,
     Symbol,
     SymbolType,
@@ -13,8 +13,6 @@ from binaryninja import (
     EnumerationBuilder,
     BinaryReader,
 )
-
-from binaryninja.log import log_error, log_info
 
 from zipfile import ZipFile
 import os
@@ -25,6 +23,7 @@ import pathlib
 import stat
 import re
 
+log = Logger(0, "XBE Loader")
 
 class XBELoader(BinaryView):
     name = "XBE"
@@ -36,13 +35,6 @@ class XBELoader(BinaryView):
     # Save these two for variable name recovery later
     analyzer_tool_filepath = str()
     recovered_symbol_list = list()
-
-    def log(self, msg, error=False):
-        msg = f"[XBE Loader] {msg}"
-        if not error:
-            log_info(msg)
-        else:
-            log_error(msg)
 
     def __init__(self, data):
         BinaryView.__init__(self, file_metadata=data.file, parent_view=data)
@@ -63,7 +55,7 @@ class XBELoader(BinaryView):
 
     def recover_varible_names(self):
 
-        self.log("Recovring variable names...")
+        log.log_info("Recovring variable names...")
         for line in self.recovered_symbol_list:
 
             # Speparate address from the rest of symbol
@@ -81,9 +73,7 @@ class XBELoader(BinaryView):
             address = int(symbol_and_address[1].decode(), 16)
 
             # Make list of variable names
-            variable_names = list()
-            for param in params_list:
-                variable_names.append(param.split(" ")[-1])
+            variable_names = [param.split(" ")[-1] for param in params_list]
 
             func_obj = self.get_function_at(address)
 
@@ -99,8 +89,8 @@ class XBELoader(BinaryView):
                     defualt_var_name.name = recovered_var_name
             except AttributeError:
                 continue
-            
-        self.log("Done!")
+
+        log.log_info("Done!")
 
     def process_imports(self, kernel_thunk_table_addr):
         """
@@ -492,7 +482,7 @@ class XBELoader(BinaryView):
         ]
         # fmt: on
 
-        import_names_and_addrs = dict()
+        import_names_and_addrs = {}
 
         # Get the raw offset of the segment that has the IAT
         segment = self.get_segment_at(kernel_thunk_table_addr)
@@ -504,7 +494,7 @@ class XBELoader(BinaryView):
             import_addr = reader.read32()
 
             # Import table is terminated with a zero dword
-            if import_addr == 0:
+            if import_addr is None or import_addr == 0:
                 break
 
             import_name = kernel_exports[import_addr & ~0x80000000]
@@ -554,9 +544,9 @@ class XBELoader(BinaryView):
                 ),
                 # Type.int(0x4, False),
             )
-            self.log(f'Setting up kernel export "{import_name}" at {hex(import_addr)}')
+            log.log_info(f'Setting up kernel export "{import_name}" at {import_addr:#x}')
 
-        self.log("Done setting up kernel exports!")
+        log.log_info("Done setting up kernel exports!")
 
     def define_xbe_symbols(self):
         """
@@ -604,13 +594,12 @@ class XBELoader(BinaryView):
             # Download and extract if symbol analyzer doesn't already exist
             # or if release versions differ, download the latest update
             if not os.path.exists(extract_path) or release_version != current_version:
-                self.log(f"Downloading XbSymbolDatabase analyzer")
+                log.log_info("Downloading XbSymbolDatabase analyzer")
                 try:
                     request_obj = requests.get(release_url, allow_redirects=True)
                 except requests.exceptions.RequestException as e:
-                    self.log(
-                        "Unable to download XbSymbolDatabase analyzer: " + str(e),
-                        error=True,
+                    log.log_error(
+                        f"Unable to download XbSymbolDatabase analyzer: {e}",
                     )
                     return
 
@@ -627,8 +616,8 @@ class XBELoader(BinaryView):
                     zip_obj.extract(analyzer_tool_filepath, extract_path)
 
         except requests.exceptions.RequestException as e:
-            self.log(
-                "Unable to reach XbSymbolDatabase GitHub release: " + str(e), error=True
+            log.log_error(
+                f"Unable to reach XbSymbolDatabase GitHub release: {e}"
             )
 
         self.analyzer_tool_filepath = os.path.join(extract_path, analyzer_tool_filepath)
@@ -640,11 +629,11 @@ class XBELoader(BinaryView):
             st = os.stat(self.analyzer_tool_filepath)
             os.chmod(self.analyzer_tool_filepath, st.st_mode | stat.S_IEXEC)
 
-            self.log("Running XbSymbolDatabase analyzer.")
+            log.log_info("Running XbSymbolDatabase analyzer.")
 
             # -e give us extended info like variable names
             output = subprocess.run(
-                [self.analyzer_tool_filepath, xbe_filepath, "-e"], capture_output=True
+                [self.analyzer_tool_filepath, xbe_filepath, "-e"], capture_output=True, check=True
             )
 
             # Parse analyzer output
@@ -671,8 +660,8 @@ class XBELoader(BinaryView):
                 if self.get_segment_at(address) is None:
                     continue
 
-                self.log(
-                    f'Found "{demangled_symbol}" at {hex(address)}. Creating label...'
+                log.log_info(
+                    f'Found "{demangled_symbol}" at {address:#x}. Creating label...'
                 )
 
                 # Assume function symbol
@@ -691,12 +680,11 @@ class XBELoader(BinaryView):
                     ),
                 )
 
-            self.log("Done adding symbols from XbSymbolDatabase")
+            log.log_info("Done adding symbols from XbSymbolDatabase")
             return
 
-        self.log(
+        log.log_error(
             "XbSymbolDatabase analyzer not found. Skipping symbol resolution.",
-            error=True,
         )
 
     def init(self):
@@ -708,10 +696,10 @@ class XBELoader(BinaryView):
         with EnumerationBuilder.builder(
             self.raw, xbe_init_flags_name
         ) as xbe_init_flags:
-            xbe_init_flags.append("FLAG_MOUNT_UTILITY_DRIVE", 0x00000001),
-            xbe_init_flags.append("FLAG_FORMAT_UTILITY_DRIVE", 0x00000002),
-            xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000004),
-            xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000008),
+            xbe_init_flags.append("FLAG_MOUNT_UTILITY_DRIVE", 0x00000001)
+            xbe_init_flags.append("FLAG_FORMAT_UTILITY_DRIVE", 0x00000002)
+            xbe_init_flags.append("FLAG_LIMIT64MB", 0x00000004)
+            xbe_init_flags.append("FLAG_DONT_SETUP_HARDDISK", 0x00000008)
 
         # Create xbe_init_flags platform type
         xbe_init_flags_enum_id = Type.generate_auto_type_id("xbe", xbe_init_flags_name)
@@ -857,19 +845,19 @@ class XBELoader(BinaryView):
         with EnumerationBuilder.builder(
             self.raw, xbe_allowed_media_flags_name
         ) as xbe_allowed_media_flags:
-            xbe_allowed_media_flags.append("HARD_DISK", 0x00000001),
-            xbe_allowed_media_flags.append("DVD_X2", 0x00000002),
-            xbe_allowed_media_flags.append("DVD_CD", 0x00000004),
-            xbe_allowed_media_flags.append("CD", 0x00000008),
-            xbe_allowed_media_flags.append("DVD_5_RO", 0x00000010),
-            xbe_allowed_media_flags.append("DVD_9_RO", 0x00000020),
-            xbe_allowed_media_flags.append("DVD_5_RW", 0x00000040),
-            xbe_allowed_media_flags.append("DVD_9_RW", 0x00000080),
-            xbe_allowed_media_flags.append("DONGLE", 0x00000100),
-            xbe_allowed_media_flags.append("MEDIA_BOARD", 0x00000200),
-            xbe_allowed_media_flags.append("NONSECURE_HARD_DISK", 0x40000000),
-            xbe_allowed_media_flags.append("NONSECURE_MODE", 0x80000000),
-            xbe_allowed_media_flags.append("MEDIA_MASK", 0x00FFFFFF),
+            xbe_allowed_media_flags.append("HARD_DISK", 0x00000001)
+            xbe_allowed_media_flags.append("DVD_X2", 0x00000002)
+            xbe_allowed_media_flags.append("DVD_CD", 0x00000004)
+            xbe_allowed_media_flags.append("CD", 0x00000008)
+            xbe_allowed_media_flags.append("DVD_5_RO", 0x00000010)
+            xbe_allowed_media_flags.append("DVD_9_RO", 0x00000020)
+            xbe_allowed_media_flags.append("DVD_5_RW", 0x00000040)
+            xbe_allowed_media_flags.append("DVD_9_RW", 0x00000080)
+            xbe_allowed_media_flags.append("DONGLE", 0x00000100)
+            xbe_allowed_media_flags.append("MEDIA_BOARD", 0x00000200)
+            xbe_allowed_media_flags.append("NONSECURE_HARD_DISK", 0x40000000)
+            xbe_allowed_media_flags.append("NONSECURE_MODE", 0x80000000)
+            xbe_allowed_media_flags.append("MEDIA_MASK", 0x00FFFFFF)
 
         # Create xbe_allowed_media_flags platform type
         xbe_allowed_media_flags_enum_id = Type.generate_auto_type_id(
@@ -889,10 +877,10 @@ class XBELoader(BinaryView):
         with EnumerationBuilder.builder(
             self.raw, xbe_game_region_flags_name
         ) as xbe_game_region_flags:
-            xbe_game_region_flags.append("FLAG_GAME_REGION_NA", 0x00000001),
-            xbe_game_region_flags.append("FLAG_GAME_REGION_JAPAN", 0x00000002),
-            xbe_game_region_flags.append("FLAG_GAME_REGION_RESTOFWORLD", 0x00000004),
-            xbe_game_region_flags.append("FLAG_GAME_REGION_MANUFACTURING", 0x80000000),
+            xbe_game_region_flags.append("FLAG_GAME_REGION_NA", 0x00000001)
+            xbe_game_region_flags.append("FLAG_GAME_REGION_JAPAN", 0x00000002)
+            xbe_game_region_flags.append("FLAG_GAME_REGION_RESTOFWORLD", 0x00000004)
+            xbe_game_region_flags.append("FLAG_GAME_REGION_MANUFACTURING", 0x80000000)
 
         # Create xbe_game_region_flags platform type
         xbe_game_region_flags_enum_id = Type.generate_auto_type_id(
@@ -975,12 +963,12 @@ class XBELoader(BinaryView):
         with EnumerationBuilder.builder(
             self.raw, xbe_section_flags_name
         ) as xbe_section_flags:
-            xbe_section_flags.append("FLAG_WRITABLE", 0x00000001),
-            xbe_section_flags.append("FLAG_PRELOAD", 0x00000002),
-            xbe_section_flags.append("FLAG_EXECUTABLE", 0x00000004),
-            xbe_section_flags.append("FLAG_INSERTED_FILE", 0x00000008),
-            xbe_section_flags.append("FLAG_HEAD_PAGE_READ_ONLY", 0x00000010),
-            xbe_section_flags.append("FLAG_TAIL_PAGE_READ_ONLY", 0x00000020),
+            xbe_section_flags.append("FLAG_WRITABLE", 0x00000001)
+            xbe_section_flags.append("FLAG_PRELOAD", 0x00000002)
+            xbe_section_flags.append("FLAG_EXECUTABLE", 0x00000004)
+            xbe_section_flags.append("FLAG_INSERTED_FILE", 0x00000008)
+            xbe_section_flags.append("FLAG_HEAD_PAGE_READ_ONLY", 0x00000010)
+            xbe_section_flags.append("FLAG_TAIL_PAGE_READ_ONLY", 0x00000020)
 
         # Create xbe_section_flags platform type
         xbe_section_flags_enum_id = Type.generate_auto_type_id(
